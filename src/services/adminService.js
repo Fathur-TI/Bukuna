@@ -6,6 +6,7 @@ import {
   migrateAgeLabel,
   isValidUuid,
   generateUuid,
+  generateStorySlug,
 } from './storyStorage';
 
 /**
@@ -23,14 +24,7 @@ const LOCAL_ADMIN_STORIES_KEY = 'bukuna_admin_stories_v1';
 const LOCAL_COMMENTS_KEY = 'bukuna_story_comments_v1';
 
 export function slugifyStoryTitle(title) {
-  const base = String(title || '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-  return base || `cerita-bukuna-${Date.now()}`;
+  return generateStorySlug(title);
 }
 
 export function isUserAdmin(user) {
@@ -148,7 +142,7 @@ export function normalizeDbStoryToBukuna(row) {
  */
 export function buildDbStoryPayload(input) {
   const title = String(input.title || input.judul || 'Cerita Baru Bukuna').trim();
-  const slug = String(input.slug || input.id || slugifyStoryTitle(title)).trim();
+  const slug = generateStorySlug(title, input.slug);
   const rawId = String(input.id || '').trim();
   const id = isValidUuid(rawId) ? rawId : generateUuid();
   const synopsis = String(input.synopsis || input.sinopsis || '').trim();
@@ -209,6 +203,7 @@ export function buildDbStoryPayload(input) {
 
   return {
     id,
+    slug,
     user_id,
     author_name,
     title,

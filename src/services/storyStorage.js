@@ -99,6 +99,35 @@ export function generateUuid() {
   });
 }
 
+/**
+ * Menghasilkan slug URL unik dari judul cerita ditambah akhiran acak singkat
+ * Contoh: "Lentera Kecil di Kebun Bima" -> "lentera-kecil-di-kebun-bima-x7k9m"
+ */
+export function generateStorySlug(title, existingSlug = '') {
+  const base = String(title || 'cerita-bukuna')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  const safeBase = base || 'cerita-bukuna';
+  const trimmedExisting = typeof existingSlug === 'string' ? existingSlug.trim() : '';
+
+  if (
+    trimmedExisting &&
+    !isValidUuid(trimmedExisting) &&
+    !trimmedExisting.startsWith('draf-cerita-baru') &&
+    (trimmedExisting === safeBase || trimmedExisting.startsWith(`${safeBase}-`))
+  ) {
+    return trimmedExisting;
+  }
+
+  const shortSuffix = Math.random().toString(36).slice(2, 7);
+  return `${safeBase}-${shortSuffix}`;
+}
+
 export function isIndexedDbImageId(val) {
   return typeof val === 'string' && val.startsWith('idb:');
 }
@@ -622,9 +651,14 @@ export function normalizeStoryObject(input, existing = null) {
     now;
   const diubah = input.updated_at || now;
 
+  const slug = generateStorySlug(
+    judul,
+    (input && input.slug) || (existing && existing.slug) || ''
+  );
+
   return {
     id,
-    slug: input.slug || id,
+    slug,
     user_id: userId,
     author_name: penulis,
     penulis,
@@ -718,11 +752,15 @@ async function buildSupabaseStoryRow(normalizedStory) {
     ? normalizedStory.id
     : generateUuid();
 
+  const titleVal = normalizedStory.title || normalizedStory.judul || 'Cerita Tanpa Judul';
+  const slugVal = generateStorySlug(titleVal, normalizedStory.slug);
+
   return {
     id: validId,
+    slug: slugVal,
     user_id: isValidUuid(normalizedStory.user_id) ? normalizedStory.user_id : null,
     author_name: normalizedStory.author_name || normalizedStory.penulis || 'Guru & Orang Tua Bukuna',
-    title: normalizedStory.title || normalizedStory.judul,
+    title: titleVal,
     synopsis: normalizedStory.synopsis || normalizedStory.sinopsis || '',
     category: normalizedStory.category || normalizedStory.kategori || 'Petualangan',
     age_group: normalizedStory.age_group || normalizedStory.usia || '4-5 Tahun',

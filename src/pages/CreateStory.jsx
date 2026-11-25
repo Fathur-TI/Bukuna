@@ -16,7 +16,12 @@ import PageEditor from '../components/editor/PageEditor';
 import StoryPreview from '../components/editor/StoryPreview';
 import useAutosave from '../hooks/useAutosave';
 import { useBukuna } from '../context/BukunaContext';
-import { getStoryById, generateUuid, isValidUuid } from '../services/storyStorage';
+import {
+  getStoryById,
+  generateUuid,
+  isValidUuid,
+  generateStorySlug,
+} from '../services/storyStorage';
 
 const WORKING_DRAFT_KEY = 'bukuna_working_draft_id_v1';
 
@@ -105,10 +110,13 @@ export default function CreateStory({ editStoryId = null }) {
     async (dataToSave, options = { silent: false, forceStatus: null }) => {
       const nextStatus = options.forceStatus || dataToSave.status || 'draf';
       const validId = isValidUuid(dataToSave.id) ? dataToSave.id : generateUuid();
+      const safeTitle = (dataToSave.judul || '').trim() || 'Draf Cerita Baru';
+      const safeSlug = generateStorySlug(safeTitle, dataToSave.slug);
       const payload = {
         ...dataToSave,
         id: validId,
-        judul: (dataToSave.judul || '').trim() || 'Draf Cerita Baru',
+        slug: safeSlug,
+        judul: safeTitle,
         status: nextStatus,
         penulis: dataToSave.penulis || (user && user.name) || 'Guru & Orang Tua Bukuna',
       };
