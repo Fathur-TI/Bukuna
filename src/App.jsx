@@ -37,9 +37,30 @@ function ToastNotification() {
   );
 }
 
+function DemoModeBanner() {
+  const { isDemoMode } = useBukuna();
+  if (!isDemoMode) return null;
+
+  return (
+    <div
+      role="status"
+      aria-label="Mode demo aktif"
+      className="w-full bg-[#062D2C] border-b border-[#1FAFAA]/40 px-4 py-1.5 text-center text-xs font-heading font-bold text-[#FFE9B0] flex items-center justify-center gap-2 z-40"
+    >
+      <span className="px-2 py-0.5 rounded-full bg-[#E07030] text-white text-[11px] font-extrabold uppercase tracking-wider">
+        Mode demo
+      </span>
+      <span className="text-white/90">
+        Berjalan dengan simulasi akun lokal (tanpa koneksi server Supabase).
+      </span>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <BukunaProvider>
+      <DemoModeBanner />
       <ToastNotification />
       <Routes>
         {/* 1. Splash Screen */}

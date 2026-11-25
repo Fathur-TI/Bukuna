@@ -1228,6 +1228,9 @@ input::placeholder, textarea::placeholder { color: #64748B; opacity: 1; }
         } else if (k === 'className') {
           if (isSvg) el.removeAttribute('class');
           else el.className = '';
+        if (k === 'checked') {
+          el.checked = Boolean(val);
+          return;
         } else if (k === 'disabled') {
           el.disabled = false;
           el.removeAttribute('disabled');
@@ -1266,8 +1269,14 @@ input::placeholder, textarea::placeholder { color: #64748B; opacity: 1; }
       }
       if (k.startsWith('on') && typeof val === 'function') {
         const rawEvt = k.slice(2).toLowerCase();
-        const isFileOrSelect = tag === 'select' || (tag === 'input' && (newProps.type === 'file' || el.type === 'file'));
-        const evt = rawEvt === 'change' && (tag === 'input' || tag === 'textarea') && !isFileOrSelect ? 'input' : rawEvt;
+        const isFileOrSelectOrCheckbox =
+          tag === 'select' ||
+          (tag === 'input' &&
+            (newProps.type === 'file' ||
+              el.type === 'file' ||
+              newProps.type === 'checkbox' ||
+              el.type === 'checkbox'));
+        const evt = rawEvt === 'change' && (tag === 'input' || tag === 'textarea') && !isFileOrSelectOrCheckbox ? 'input' : rawEvt;
         el._handlers[evt] = val;
         if (!el._bound[evt]) {
           el._bound[evt] = (e) => {
@@ -1284,6 +1293,10 @@ input::placeholder, textarea::placeholder { color: #64748B; opacity: 1; }
         if (el.value !== strVal) {
           el.value = strVal;
         }
+        return;
+      }
+      if (k === 'checked') {
+        el.checked = Boolean(val);
         return;
       }
       if (k === 'disabled') {
@@ -1623,6 +1636,696 @@ const ArrowRight = createIcon(React.createElement(React.Fragment, null, React.cr
 const RefreshCw = createIcon(React.createElement(React.Fragment, null, React.createElement("path", {d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"}), React.createElement("path", {d: "M21 3v5h-5"}), React.createElement("path", {d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"}), React.createElement("path", {d: "M8 16H3v5"})));
 const ImageIcon = createIcon(React.createElement(React.Fragment, null, React.createElement("rect", {width: "18", height: "18", x: "3", y: "3", rx: "2", ry: "2"}), React.createElement("circle", {cx: "9", cy: "9", r: "2"}), React.createElement("path", {d: "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"})));
 const ListOrdered = createIcon(React.createElement(React.Fragment, null, React.createElement("line", {x1: "10", x2: "21", y1: "6", y2: "6"}), React.createElement("line", {x1: "10", x2: "21", y1: "12", y2: "12"}), React.createElement("line", {x1: "10", x2: "21", y1: "18", y2: "18"}), React.createElement("path", {d: "M4 6h1v4"}), React.createElement("path", {d: "M4 10h2"}), React.createElement("path", {d: "M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"})));
+
+
+// === MODULE: src/lib/supabaseClient.js ===
+
+/**
+ * Inisialisasi Klien Supabase BUKUNA (/src/lib/supabaseClient.js)
+ * - Membaca VITE_SUPABASE_URL dan VITE_SUPABASE_ANON_KEY (mendukung publishable key sb_publishable_...)
+ * - Jika variabel lingkungan kosong atau dijalankan dari file:// (preview.html),
+ *   otomatis beralih ke Mode Demo tanpa melempar error.
+ */
+
+function readViteEnv() {
+  try {
+    // Mendukung Vite (import.meta.env) maupun fallback global jika dijalankan di preview.html
+    const metaEnv =
+      typeof import.meta !== 'undefined' && import.meta.env
+        ? import.meta.env
+        : {};
+    const winEnv =
+      typeof window !== 'undefined' && window.__BUKUNA_ENV__
+        ? window.__BUKUNA_ENV__
+        : {};
+
+    const url = String(
+      metaEnv.VITE_SUPABASE_URL || winEnv.VITE_SUPABASE_URL || ''
+    ).trim();
+    const anonKey = String(
+      metaEnv.VITE_SUPABASE_ANON_KEY || winEnv.VITE_SUPABASE_ANON_KEY || ''
+    ).trim();
+
+    return { url, anonKey };
+  } catch {
+    return { url: '', anonKey: '' };
+  }
+}
+
+const { url: supabaseUrl, anonKey: supabaseAnonKey } = readViteEnv();
+
+const isFileProtocol =
+  typeof window !== 'undefined' &&
+  window.location &&
+  window.location.protocol === 'file:';
+
+const isSupabaseConfigured = Boolean(
+  !isFileProtocol &&
+    supabaseUrl &&
+    supabaseAnonKey &&
+    supabaseUrl.startsWith('http')
+);
+
+const supabase =
+  isSupabaseConfigured && typeof createClient === 'function'
+    ? createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+          storageKey: 'bukuna_supabase_auth_v1',
+        },
+      })
+    : null;
+
+
+// === MODULE: src/services/authService.js ===
+
+/**
+ * Lapisan Layanan Autentikasi BUKUNA (/src/services/authService.js)
+ * - Komponen UI tidak memanggil Supabase secara langsung, melainkan melalui fungsi di modul ini.
+ * - Menyediakan fungsi: daftar (registerWithEmail), masuk (loginWithEmail), keluar (logoutUser),
+ *   lupa kata sandi (sendPasswordReset), ambil sesi (getCurrentSessionUser),
+ *   pembaruan kata sandi saat reset (updateUserPassword), dan langganan perubahan sesi (subscribeAuthChanges).
+ * - Jika VITE_SUPABASE_URL kosong atau server Supabase tidak dapat dihubungi (offline/preview.html),
+ *   otomatis beralih ke Mode Demo (simulasi lokal) secara mulus.
+ */
+
+const DEMO_STORAGE_KEYS = {
+  USER: 'bukuna_demo_user_v1',
+  USERS_DB: 'bukuna_users_db_v1',
+};
+
+let runtimeConnectionFailed = false;
+
+function isAuthInDemoMode() {
+  return !isSupabaseConfigured || runtimeConnectionFailed || !supabase;
+}
+
+function isNetworkOrFetchError(err) {
+  if (!err) return false;
+  const msg = String(err.message || err.error_description || err).toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed') ||
+    msg.includes('load failed') ||
+    msg.includes('err_name_not_resolved') ||
+    msg.includes('fetch')
+  );
+}
+
+/**
+ * Menerjemahkan pesan error Supabase Auth ke Bahasa Indonesia yang ramah untuk guru & orang tua
+ */
+function translateAuthError(err) {
+  if (!err) return 'Terjadi kendala saat memproses akun. Silakan coba lagi ya.';
+  const raw = String(err.message || err.error_description || err).trim();
+  const lower = raw.toLowerCase();
+
+  if (
+    lower.includes('invalid login credentials') ||
+    lower.includes('invalid_credentials') ||
+    lower.includes('invalid email or password')
+  ) {
+    return 'Email atau Kata Sandi belum tepat. Silakan periksa kembali atau klik "Lupa kata sandi?".';
+  }
+  if (lower.includes('email not confirmed')) {
+    return 'Email Anda belum dikonfirmasi. Silakan buka kotak masuk email Anda dan klik tautan verifikasi terlebih dahulu.';
+  }
+  if (
+    lower.includes('user already registered') ||
+    lower.includes('already been registered') ||
+    lower.includes('already exists')
+  ) {
+    return 'Alamat email ini sudah terdaftar. Silakan masuk menggunakan halaman Masuk atau gunakan fitur Lupa Kata Sandi.';
+  }
+  if (
+    lower.includes('password should be at least') ||
+    lower.includes('weak_password')
+  ) {
+    return 'Kata Sandi minimal harus terdiri dari 8 karakter.';
+  }
+  if (
+    lower.includes('unable to validate email address') ||
+    lower.includes('invalid format') ||
+    lower.includes('anonymous_provider_disabled')
+  ) {
+    return 'Format alamat Email belum valid (contoh: nama@email.com).';
+  }
+  if (
+    lower.includes('rate limit') ||
+    lower.includes('too many requests') ||
+    lower.includes('over_email_send_rate_limit') ||
+    lower.includes('for security purposes, you can only request this')
+  ) {
+    return 'Terlalu banyak permintaan dalam waktu singkat. Mohon tunggu sekitar 1 menit sebelum mencoba kembali.';
+  }
+  if (isNetworkOrFetchError(err)) {
+    return 'Tidak dapat terhubung ke layanan akun. Periksa koneksi internet Anda dan coba lagi.';
+  }
+
+  return raw || 'Terjadi kendala saat memproses permintaan akun Anda.';
+}
+
+function readLocalJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeLocalJson(key, value) {
+  try {
+    if (value === null || value === undefined) {
+      localStorage.removeItem(key);
+    } else {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+  } catch {
+    // Abaikan jika penyimpanan lokal penuh
+  }
+}
+
+function buildNormalizedUser(authUser, profileRow = null) {
+  if (!authUser) return null;
+  const meta = authUser.user_metadata || {};
+  const displayName =
+    (profileRow && profileRow.nama_akun) ||
+    meta.nama_akun ||
+    meta.nama ||
+    meta.name ||
+    (authUser.email ? authUser.email.split('@')[0] : 'Sahabat Bukuna');
+  const peran = (profileRow && profileRow.peran) || meta.peran || 'guru';
+  const dibuat =
+    (profileRow && profileRow.dibuat) ||
+    authUser.created_at ||
+    new Date().toISOString();
+
+  return {
+    id: authUser.id,
+    nama: displayName,
+    name: displayName,
+    nama_akun: displayName,
+    email: authUser.email || '',
+    peran,
+    dibuat,
+    avatar: meta.avatar || 'orange-cat',
+    isDemo: false,
+  };
+}
+
+/**
+ * Mengambil atau membuat baris profil pengguna dari tabel `public.profiles`
+ */
+async function fetchOrEnsureProfile(authUser, fallbackName = '') {
+  if (!supabase || !authUser || !authUser.id) {
+    return buildNormalizedUser(authUser);
+  }
+
+  try {
+    const { data: existingProfile, error: selectErr } = await supabase
+      .from('profiles')
+      .select('id, nama_akun, peran, dibuat')
+      .eq('id', authUser.id)
+      .maybeSingle();
+
+    if (!selectErr && existingProfile) {
+      return buildNormalizedUser(authUser, existingProfile);
+    }
+
+    const meta = authUser.user_metadata || {};
+    const candidateName =
+      (fallbackName && fallbackName.trim()) ||
+      meta.nama_akun ||
+      meta.nama ||
+      meta.name ||
+      (authUser.email ? authUser.email.split('@')[0] : 'Guru & Orang Tua Bukuna');
+
+    const { data: insertedProfile, error: insertErr } = await supabase
+      .from('profiles')
+      .insert({
+        id: authUser.id,
+        nama_akun: candidateName,
+      })
+      .select('id, nama_akun, peran, dibuat')
+      .maybeSingle();
+
+    if (!insertErr && insertedProfile) {
+      return buildNormalizedUser(authUser, insertedProfile);
+    }
+
+    return buildNormalizedUser(authUser, {
+      id: authUser.id,
+      nama_akun: candidateName,
+      peran: 'guru',
+    });
+  } catch {
+    return buildNormalizedUser(authUser);
+  }
+}
+
+/**
+ * 1. AMBIL SESI PENGGUNA SAAT INI
+ */
+async function getCurrentSessionUser() {
+  // Bersihkan key legacy lama jika Supabase sudah dikonfigurasi agar akun statis "Ibu Guru Rina" tidak muncul lagi
+  if (isSupabaseConfigured) {
+    try {
+      const legacyRaw = localStorage.getItem('bukuna_user_v1');
+      if (legacyRaw) {
+        const parsed = JSON.parse(legacyRaw);
+        if (parsed && (parsed.id === 'usr-1' || parsed.id === 'usr-demo')) {
+          localStorage.removeItem('bukuna_user_v1');
+        }
+      }
+    } catch {
+      // Abaikan
+    }
+  }
+
+  if (isAuthInDemoMode()) {
+    const storedDemo = readLocalJson(DEMO_STORAGE_KEYS.USER, {
+      id: 'usr-1',
+      nama: 'Ibu Guru Rina',
+      name: 'Ibu Guru Rina',
+      nama_akun: 'Ibu Guru Rina',
+      email: 'rina.guru@bukuna.id',
+      peran: 'guru',
+      avatar: 'orange-cat',
+      isDemo: true,
+    });
+    return {
+      user: storedDemo,
+      isDemoMode: true,
+      error: null,
+    };
+  }
+
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) {
+      if (isNetworkOrFetchError(error)) {
+        runtimeConnectionFailed = true;
+        const fallbackDemo = readLocalJson(DEMO_STORAGE_KEYS.USER, null);
+        return { user: fallbackDemo, isDemoMode: true, error: null };
+      }
+      return { user: null, isDemoMode: false, error: translateAuthError(error) };
+    }
+
+    const sessionUser = data && data.session ? data.session.user : null;
+    if (!sessionUser) {
+      return { user: null, isDemoMode: false, error: null };
+    }
+
+    const profileUser = await fetchOrEnsureProfile(sessionUser);
+    return {
+      user: profileUser,
+      isDemoMode: false,
+      error: null,
+    };
+  } catch (err) {
+    if (isNetworkOrFetchError(err)) {
+      runtimeConnectionFailed = true;
+      const fallbackDemo = readLocalJson(DEMO_STORAGE_KEYS.USER, null);
+      return { user: fallbackDemo, isDemoMode: true, error: null };
+    }
+    return { user: null, isDemoMode: false, error: translateAuthError(err) };
+  }
+}
+
+/**
+ * 2. DAFTAR AKUN BARU (Email + Kata Sandi + Nama Akun)
+ */
+async function registerWithEmail({ nama, email, password }) {
+  const cleanName = String(nama || '').trim() || 'Guru & Orang Tua Bukuna';
+  const cleanEmail = String(email || '').trim();
+
+  if (isAuthInDemoMode()) {
+    const newUser = {
+      id: `usr-${Date.now()}`,
+      nama: cleanName,
+      name: cleanName,
+      nama_akun: cleanName,
+      email: cleanEmail,
+      peran: 'guru',
+      dibuat: new Date().toISOString(),
+      avatar: 'orange-cat',
+      isDemo: true,
+    };
+    const usersDb = readLocalJson(DEMO_STORAGE_KEYS.USERS_DB, []);
+    const updatedDb = [
+      ...usersDb.filter(
+        (u) => (u.email || '').toLowerCase() !== cleanEmail.toLowerCase()
+      ),
+      { ...newUser, password },
+    ];
+    writeLocalJson(DEMO_STORAGE_KEYS.USERS_DB, updatedDb);
+    writeLocalJson(DEMO_STORAGE_KEYS.USER, newUser);
+    return {
+      ok: true,
+      user: newUser,
+      needsEmailConfirmation: false,
+      isDemoMode: true,
+    };
+  }
+
+  try {
+    const redirectUrl =
+      typeof window !== 'undefined' && window.location
+        ? `${window.location.origin}/masuk`
+        : undefined;
+
+    const { data, error } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password,
+      options: {
+        emailRedirectTo: redirectUrl,
+        data: {
+          nama_akun: cleanName,
+          nama: cleanName,
+          name: cleanName,
+        },
+      },
+    });
+
+    if (error) {
+      if (isNetworkOrFetchError(error)) {
+        runtimeConnectionFailed = true;
+        return registerWithEmail({ nama: cleanName, email: cleanEmail, password });
+      }
+      return {
+        ok: false,
+        error: translateAuthError(error),
+      };
+    }
+
+    // Deteksi jika Supabase mengembalikan user dengan identities kosong (email sudah terdaftar)
+    if (
+      data &&
+      data.user &&
+      Array.isArray(data.user.identities) &&
+      data.user.identities.length === 0
+    ) {
+      return {
+        ok: false,
+        error:
+          'Alamat email ini sudah terdaftar. Silakan masuk melalui halaman Masuk atau gunakan Lupa Kata Sandi.',
+      };
+    }
+
+    const hasActiveSession = Boolean(data && data.session && data.user);
+    if (hasActiveSession) {
+      const profileUser = await fetchOrEnsureProfile(data.user, cleanName);
+      return {
+        ok: true,
+        user: profileUser,
+        needsEmailConfirmation: false,
+        isDemoMode: false,
+      };
+    }
+
+    return {
+      ok: true,
+      user: null,
+      needsEmailConfirmation: true,
+      isDemoMode: false,
+      message: `Pendaftaran berhasil! Kami telah mengirimkan email konfirmasi ke ${cleanEmail}. Silakan buka kotak masuk email Anda dan klik tautan verifikasi sebelum masuk.`,
+    };
+  } catch (err) {
+    if (isNetworkOrFetchError(err)) {
+      runtimeConnectionFailed = true;
+      return registerWithEmail({ nama: cleanName, email: cleanEmail, password });
+    }
+    return {
+      ok: false,
+      error: translateAuthError(err),
+    };
+  }
+}
+
+/**
+ * 3. MASUK AKUN (Email + Kata Sandi)
+ */
+async function loginWithEmail({ email, password }) {
+  const cleanEmail = String(email || '').trim();
+
+  if (isAuthInDemoMode()) {
+    const usersDb = readLocalJson(DEMO_STORAGE_KEYS.USERS_DB, []);
+    const found = usersDb.find(
+      (u) =>
+        u.email && u.email.toLowerCase() === cleanEmail.toLowerCase()
+    );
+
+    if (found && found.password && found.password !== password) {
+      return {
+        ok: false,
+        error: 'Email atau Kata Sandi belum tepat. Silakan periksa kembali.',
+      };
+    }
+
+    const displayName =
+      (found && (found.nama_akun || found.nama || found.name)) ||
+      (cleanEmail.includes('@') ? cleanEmail.split('@')[0] : cleanEmail) ||
+      'Guru Bukuna';
+
+    const loggedUser = {
+      id: (found && found.id) || `usr-${Date.now()}`,
+      nama: displayName,
+      name: displayName,
+      nama_akun: displayName,
+      email: cleanEmail,
+      peran: (found && found.peran) || 'guru',
+      avatar: 'orange-cat',
+      isDemo: true,
+    };
+
+    writeLocalJson(DEMO_STORAGE_KEYS.USER, loggedUser);
+    return {
+      ok: true,
+      user: loggedUser,
+      isDemoMode: true,
+    };
+  }
+
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: cleanEmail,
+      password,
+    });
+
+    if (error) {
+      if (isNetworkOrFetchError(error)) {
+        runtimeConnectionFailed = true;
+        return loginWithEmail({ email: cleanEmail, password });
+      }
+      return {
+        ok: false,
+        error: translateAuthError(error),
+      };
+    }
+
+    const authUser = data && data.user ? data.user : null;
+    if (!authUser) {
+      return {
+        ok: false,
+        error: 'Gagal memuat sesi pengguna. Silakan coba masuk kembali.',
+      };
+    }
+
+    const profileUser = await fetchOrEnsureProfile(authUser);
+    return {
+      ok: true,
+      user: profileUser,
+      isDemoMode: false,
+    };
+  } catch (err) {
+    if (isNetworkOrFetchError(err)) {
+      runtimeConnectionFailed = true;
+      return loginWithEmail({ email: cleanEmail, password });
+    }
+    return {
+      ok: false,
+      error: translateAuthError(err),
+    };
+  }
+}
+
+/**
+ * 4. MASUK AKUN DEMO (Hanya aktif di Mode Demo)
+ */
+function loginAsDemoAccount() {
+  const demoUser = {
+    id: 'usr-demo',
+    nama: 'Bukuna Study',
+    name: 'Bukuna Study',
+    nama_akun: 'Bukuna Study',
+    email: 'bukuna@gmail.com',
+    peran: 'guru',
+    avatar: 'orange-cat',
+    isDemo: true,
+  };
+  writeLocalJson(DEMO_STORAGE_KEYS.USER, demoUser);
+  return {
+    ok: true,
+    user: demoUser,
+    isDemoMode: true,
+  };
+}
+
+/**
+ * 5. KELUAR AKUN (Logout)
+ */
+async function logoutUser() {
+  writeLocalJson(DEMO_STORAGE_KEYS.USER, null);
+  try {
+    localStorage.removeItem('bukuna_user_v1');
+  } catch {
+    // Abaikan
+  }
+
+  if (!isAuthInDemoMode() && supabase) {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Abaikan jika gagal signOut jaringan
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * 6. LUPA KATA SANDI (Kirim Tautan Reset ke Email)
+ */
+async function sendPasswordReset(email) {
+  const cleanEmail = String(email || '').trim();
+  if (!cleanEmail) {
+    return {
+      ok: false,
+      error: 'Mohon isi alamat Email terlebih dahulu untuk menerima tautan reset kata sandi.',
+    };
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(cleanEmail)) {
+    return {
+      ok: false,
+      error: 'Format alamat Email belum valid (contoh: nama@email.com).',
+    };
+  }
+
+  if (isAuthInDemoMode()) {
+    return {
+      ok: true,
+      isDemoMode: true,
+      message: `Mode Demo: Simulasi tautan pengaturan ulang kata sandi telah dikirim ke ${cleanEmail}.`,
+    };
+  }
+
+  try {
+    const redirectTo =
+      typeof window !== 'undefined' && window.location
+        ? `${window.location.origin}/masuk?reset=1`
+        : undefined;
+
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo,
+    });
+
+    if (error) {
+      if (isNetworkOrFetchError(error)) {
+        runtimeConnectionFailed = true;
+        return sendPasswordReset(cleanEmail);
+      }
+      return {
+        ok: false,
+        error: translateAuthError(error),
+      };
+    }
+
+    return {
+      ok: true,
+      isDemoMode: false,
+      message: `Tautan untuk mengatur ulang kata sandi telah dikirim ke ${cleanEmail}. Silakan periksa kotak masuk atau folder spam email Anda.`,
+    };
+  } catch (err) {
+    if (isNetworkOrFetchError(err)) {
+      runtimeConnectionFailed = true;
+      return sendPasswordReset(cleanEmail);
+    }
+    return {
+      ok: false,
+      error: translateAuthError(err),
+    };
+  }
+}
+
+/**
+ * 7. PERBARUI KATA SANDI BARU (Saat pengguna kembali dari tautan email reset password)
+ */
+async function updateUserPassword(newPassword) {
+  if (!newPassword || String(newPassword).length < 8) {
+    return {
+      ok: false,
+      error: 'Kata Sandi baru minimal terdiri dari 8 karakter.',
+    };
+  }
+
+  if (isAuthInDemoMode()) {
+    return {
+      ok: true,
+      message: 'Kata sandi berhasil diperbarui (Mode Demo).',
+    };
+  }
+
+  try {
+    const { error } = await supabase.auth.updateUser({
+      password: String(newPassword),
+    });
+    if (error) {
+      return {
+        ok: false,
+        error: translateAuthError(error),
+      };
+    }
+    return {
+      ok: true,
+      message: 'Kata sandi Anda berhasil diperbarui! Silakan lanjutkan menggunakan BUKUNA.',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: translateAuthError(err),
+    };
+  }
+}
+
+/**
+ * 8. LANGGANAN PERUBAHAN SESI AUTH SUPABASE
+ */
+function subscribeAuthChanges(callback) {
+  if (isAuthInDemoMode() || !supabase) {
+    return () => {};
+  }
+
+  const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const authUser = session && session.user ? session.user : null;
+    if (!authUser) {
+      callback(event, null);
+      return;
+    }
+    const profileUser = await fetchOrEnsureProfile(authUser);
+    callback(event, profileUser);
+  });
+
+  return () => {
+    if (data && data.subscription) {
+      data.subscription.unsubscribe();
+    }
+  };
+}
 
 
 // === MODULE: src/data/stories.js ===
@@ -3928,11 +4631,10 @@ function useQuiz(quiz, onCompleteQuiz) {
 
 
 
+
 const BukunaContext = createContext(null);
 
 const STORAGE_KEYS = {
-  USER: 'bukuna_user_v1',
-  USERS_DB: 'bukuna_users_db_v1',
   FAVORITES: 'bukuna_favorites_v1',
   COLLECTIONS: 'bukuna_collections_v1',
   HISTORY: 'bukuna_history_v1',
@@ -4008,18 +4710,29 @@ function sanitizeQuizResultsList(resultsList, validQuizIds) {
 }
 
 function BukunaProvider({ children }) {
-  // Default pengguna langsung aktif agar guru/anak dapat langsung mencoba atau keluar/daftar ulang
+  // Saat Supabase aktif, mulai dengan user = null dan authLoading = true sampai sesi Supabase selesai diperiksa.
+  // Akun bawaan "Ibu Guru Rina" dan akun demo statis HANYA aktif di Mode Demo.
+  const [isDemoMode, setIsDemoMode] = useState(() => isAuthInDemoMode());
+  const [authLoading, setAuthLoading] = useState(() => !isAuthInDemoMode());
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+
   const [user, setUser] = useState(() => {
-    const stored = readStorage(STORAGE_KEYS.USER, {
-      id: 'usr-1',
-      nama: 'Ibu Guru Rina',
-      name: 'Ibu Guru Rina',
-      email: 'rina.guru@bukuna.id',
-      avatar: 'orange-cat',
-    });
-    if (stored && !stored.nama && stored.name) stored.nama = stored.name;
-    if (stored && !stored.name && stored.nama) stored.name = stored.nama;
-    return stored;
+    if (isAuthInDemoMode()) {
+      const storedDemo = readStorage('bukuna_demo_user_v1', {
+        id: 'usr-1',
+        nama: 'Ibu Guru Rina',
+        name: 'Ibu Guru Rina',
+        nama_akun: 'Ibu Guru Rina',
+        email: 'rina.guru@bukuna.id',
+        peran: 'guru',
+        avatar: 'orange-cat',
+        isDemo: true,
+      });
+      if (storedDemo && !storedDemo.nama && storedDemo.name) storedDemo.nama = storedDemo.name;
+      if (storedDemo && !storedDemo.name && storedDemo.nama) storedDemo.name = storedDemo.nama;
+      return storedDemo;
+    }
+    return null;
   });
 
   // Daftar cerita buatan pengguna (termasuk draf & terbit)
@@ -4058,6 +4771,48 @@ function BukunaProvider({ children }) {
 
   const [toastMessage, setToastMessage] = useState(null);
 
+  const showToast = useCallback((text) => {
+    setToastMessage(text);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === text ? null : prev));
+    }, 3200);
+  }, []);
+
+  // Muat sesi awal dari authService (Supabase atau Mode Demo) dan dengarkan perubahan sesi
+  useEffect(() => {
+    let mounted = true;
+
+    async function initAuthSession() {
+      try {
+        const res = await getCurrentSessionUser();
+        if (!mounted) return;
+        setIsDemoMode(Boolean(res.isDemoMode));
+        setUser(res.user || null);
+      } finally {
+        if (mounted) {
+          setAuthLoading(false);
+        }
+      }
+    }
+
+    initAuthSession();
+
+    const unsubscribeAuth = subscribeAuthChanges((event, nextUser) => {
+      if (!mounted) return;
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+      }
+      setUser(nextUser || null);
+      setIsDemoMode(isAuthInDemoMode());
+      setAuthLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribeAuth();
+    };
+  }, []);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
     const { validStoryIds, validQuizIds } = buildValidIdSets(myStories);
@@ -4090,18 +4845,6 @@ function BukunaProvider({ children }) {
 
   useEffect(() => {
     try {
-      if (user) {
-        localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
-      } else {
-        localStorage.removeItem(STORAGE_KEYS.USER);
-      }
-    } catch {
-      // Abaikan jika mode privat penuh
-    }
-  }, [user]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(favorites));
     } catch {
       // Abaikan
@@ -4131,13 +4874,6 @@ function BukunaProvider({ children }) {
       // Abaikan
     }
   }, [quizResults]);
-
-  const showToast = useCallback((text) => {
-    setToastMessage(text);
-    setTimeout(() => {
-      setToastMessage((prev) => (prev === text ? null : prev));
-    }, 2800);
-  }, []);
 
   // Gabungkan cerita terbit buatan pengguna dengan cerita bawaan BUKUNA
   const stories = useMemo(() => {
@@ -4210,83 +4946,84 @@ function BukunaProvider({ children }) {
   }, []);
 
   const login = useCallback(
-    ({ name, nama, email, password }) => {
-      const identifier = (email || name || nama || '').trim();
-      const usersDb = readStorage(STORAGE_KEYS.USERS_DB, []);
-      const found = usersDb.find(
-        (u) =>
-          (u.name && u.name.toLowerCase() === identifier.toLowerCase()) ||
-          (u.nama && u.nama.toLowerCase() === identifier.toLowerCase()) ||
-          (u.email && u.email.toLowerCase() === identifier.toLowerCase())
-      );
-
-      const displayName =
-        (found && (found.nama || found.name)) ||
-        (nama || name || (identifier.includes('@') ? identifier.split('@')[0] : identifier) || 'Sahabat Bukuna');
-
-      const loggedUser = found
-        ? { ...found, nama: displayName, name: displayName }
-        : {
-            id: `usr-${Date.now()}`,
-            nama: displayName,
-            name: displayName,
-            email: identifier.includes('@')
-              ? identifier
-              : `${displayName.toLowerCase().replace(/\s+/g, '.')}@bukuna.id`,
-            password,
-            avatar: 'orange-cat',
-          };
-
-      setUser(loggedUser);
-      showToast(`Selamat datang kembali, ${loggedUser.nama}!`);
-      return { ok: true, user: loggedUser, ...loggedUser };
+    async ({ email, password }) => {
+      const res = await loginWithEmail({ email, password });
+      setIsDemoMode(Boolean(res.isDemoMode || isAuthInDemoMode()));
+      if (res.ok && res.user) {
+        setUser(res.user);
+        showToast(`Selamat datang kembali, ${res.user.nama}!`);
+      }
+      return res;
     },
     [showToast]
   );
 
   const loginDemo = useCallback(() => {
-    const demoUser = {
-      id: 'usr-demo',
-      nama: 'Bukuna Study',
-      name: 'Bukuna Study',
-      email: 'bukuna@gmail.com',
-      avatar: 'orange-cat',
-    };
-    setUser(demoUser);
+    if (!isAuthInDemoMode()) {
+      return {
+        ok: false,
+        error: 'Akun demo hanya tersedia saat aplikasi berjalan di Mode Demo.',
+      };
+    }
+    const res = loginAsDemoAccount();
+    setIsDemoMode(true);
+    setUser(res.user);
     showToast('Selamat datang di Mode Demo Bukuna Study!');
-    return { ok: true, user: demoUser, ...demoUser };
+    return res;
   }, [showToast]);
 
   const register = useCallback(
-    ({ name, nama, email, password }) => {
-      const cleanName = (nama || name || '').trim() || 'Sahabat Bukuna';
-      const cleanEmail = (email || '').trim();
-      const newUser = {
-        id: `usr-${Date.now()}`,
+    async ({ name, nama, email, password }) => {
+      const cleanName = (nama || name || '').trim() || 'Guru & Orang Tua Bukuna';
+      const res = await registerWithEmail({
         nama: cleanName,
-        name: cleanName,
-        email: cleanEmail,
+        email,
         password,
-        avatar: 'orange-cat',
-      };
-      const usersDb = readStorage(STORAGE_KEYS.USERS_DB, []);
-      const updatedDb = [...usersDb.filter((u) => u.email !== cleanEmail), newUser];
-      try {
-        localStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(updatedDb));
-      } catch {
-        // Abaikan
+      });
+      setIsDemoMode(Boolean(res.isDemoMode || isAuthInDemoMode()));
+      if (res.ok) {
+        if (res.user) {
+          setUser(res.user);
+          showToast(`Halo ${res.user.nama}! Akunmu berhasil dibuat.`);
+        } else if (res.needsEmailConfirmation) {
+          showToast('Pendaftaran berhasil! Silakan cek email Anda untuk konfirmasi.');
+        }
       }
-      setUser(newUser);
-      showToast(`Halo ${newUser.nama}! Akunmu berhasil dibuat.`);
-      return { ok: true, user: newUser, ...newUser };
+      return res;
     },
     [showToast]
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    await logoutUser();
     setUser(null);
+    setIsPasswordRecovery(false);
     showToast('Kamu telah keluar dari akun.');
   }, [showToast]);
+
+  const requestPasswordReset = useCallback(
+    async (email) => {
+      const res = await sendPasswordReset(email);
+      setIsDemoMode(Boolean(res.isDemoMode || isAuthInDemoMode()));
+      if (res.ok) {
+        showToast('Tautan pengaturan ulang kata sandi telah dikirim ke email Anda.');
+      }
+      return res;
+    },
+    [showToast]
+  );
+
+  const confirmNewPassword = useCallback(
+    async (newPassword) => {
+      const res = await updateUserPassword(newPassword);
+      if (res.ok) {
+        setIsPasswordRecovery(false);
+        showToast('Kata sandi berhasil diperbarui!');
+      }
+      return res;
+    },
+    [showToast]
+  );
 
   const toggleFavorite = useCallback(
     (storyId) => {
@@ -4431,10 +5168,16 @@ function BukunaProvider({ children }) {
         exportUserStory,
         importUserStory,
         user,
+        authLoading,
+        isDemoMode,
+        isPasswordRecovery,
+        setIsPasswordRecovery,
         login,
         loginDemo,
         register,
         logout,
+        requestPasswordReset,
+        confirmNewPassword,
         favorites,
         toggleFavorite,
         isFavorite,
@@ -6959,9 +7702,10 @@ function QuizQuestion({
  */
 function SplashPage() {
   const navigate = useNavigate();
-  const { user } = useBukuna();
+  const { user, authLoading } = useBukuna();
 
   useEffect(() => {
+    if (authLoading) return undefined;
     const timer = setTimeout(() => {
       if (user) {
         navigate('/beranda', { replace: true });
@@ -6971,9 +7715,10 @@ function SplashPage() {
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, [navigate, user]);
+  }, [navigate, user, authLoading]);
 
   const handleSkip = () => {
+    if (authLoading) return;
     navigate(user ? '/beranda' : '/auth', { replace: true });
   };
 
@@ -6981,7 +7726,6 @@ function SplashPage() {
     React.createElement("main", {onClick: handleSkip, role: "button", tabIndex: 0, onKeyDown: (e) => (e.key === 'Enter' || e.key === ' ') && handleSkip(), "aria-label": "Halaman Pembuka Bukuna, ketuk untuk melanjutkan", className: "bukuna-doodle-bg min-h-screen w-full flex flex-col items-center justify-center px-6 text-center cursor-pointer relative overflow-hidden"}, React.createElement("div", {className: "w-72 h-72 sm:w-96 sm:h-96 rounded-full bg-[#1FAFAA]/20 blur-3xl absolute pointer-events-none"}), React.createElement("div", {className: "relative z-10 flex flex-col items-center animate-bounce"}, React.createElement(Logo, {size: "lg"})), React.createElement("p", {className: "sub-hero relative z-10 mt-6 text-[#FFE9B0] tracking-wide"}, "Cerita Seru Untuk Dunia Kecilnya"), React.createElement("div", {className: "relative z-10 mt-8 flex items-center gap-2", "aria-hidden": "true"}, React.createElement("span", {className: "w-3 h-3 rounded-full bg-[#FFE9B0] animate-ping"}), React.createElement("span", {className: "w-3 h-3 rounded-full bg-[#E07030]"}), React.createElement("span", {className: "w-3 h-3 rounded-full bg-[#1FAFAA]"})), React.createElement("span", {className: "sub-help relative z-10 mt-6 text-white/85"}, "Ketuk layar untuk langsung mulai →"))
   );
 }
-
 
 
 // === MODULE: src/pages/AuthChoicePage.jsx ===
@@ -6993,21 +7737,25 @@ function SplashPage() {
 /**
  * Halaman 2: Pilih Masuk / Daftar (sesuai File 1 Halaman 1 kiri)
  * Logo bulat di tengah, dua tombol besar: "Masuk" dan "Daftar".
+ * Tombol "Masuk Cepat sebagai Akun Demo" HANYA ditampilkan jika berada di Mode Demo.
  */
 function AuthChoicePage() {
   const navigate = useNavigate();
-  const { loginDemo } = useBukuna();
+  const { loginDemo, isDemoMode } = useBukuna();
 
   const handleQuickDemo = () => {
-    loginDemo();
-    navigate('/beranda');
+    const res = loginDemo();
+    if (res && res.ok) {
+      navigate('/beranda');
+    }
   };
 
   return (
-    React.createElement("main", {className: "bukuna-doodle-bg min-h-screen w-full flex flex-col items-center justify-center px-5 py-10"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-7 sm:p-10 shadow-2xl flex flex-col items-center text-center"}, React.createElement("div", {className: "flex flex-col items-center justify-center mb-6"}, React.createElement(Logo, {size: "md"})), React.createElement("h1", {className: "font-heading text-2xl sm:text-3xl font-extrabold text-[#FFE9B0]"}, "Selamat Datang di Bukuna!"), React.createElement("p", {className: "sub-section mt-2 text-white/90"}, "Platform cerita anak digital yang seru, mendidik, dan aman untuk mendampingi belajar di sekolah maupun di rumah."), React.createElement("div", {className: "w-full mt-8 flex flex-col gap-4"}, React.createElement("button", {type: "button", onClick: () => navigate('/masuk'), className: "w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-bold text-lg tracking-wide shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer"}, React.createElement(LogIn, {className: "w-5 h-5"}), React.createElement("span", null, "MASUK")), React.createElement("button", {type: "button", onClick: () => navigate('/daftar'), className: "w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#1FAFAA] hover:bg-[#179691] text-[#052625] font-heading font-extrabold text-lg tracking-wide shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer"}, React.createElement(UserPlus, {className: "w-5 h-5"}), React.createElement("span", null, "DAFTAR"))), React.createElement("div", {className: "w-full mt-6 pt-5 border-t border-white/15"}, React.createElement("button", {type: "button", onClick: handleQuickDemo, className: "w-full min-h-[46px] py-2.5 px-4 rounded-2xl bg-white/10 hover:bg-white/20 text-[#FFE9B0] text-sm font-bold transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"}, React.createElement(Sparkles, {className: "w-4 h-4"}), React.createElement("span", null, "Masuk Cepat sebagai Akun Demo (Bukuna Study)")), React.createElement("div", {className: "mt-4 flex items-center justify-center gap-4 text-xs text-white/80 font-semibold"}, React.createElement(Link, {to: "/beranda", className: "hover:text-[#FFE9B0] underline"}, "Lihat Beranda Langsung"), React.createElement("span", null, "•"), React.createElement(Link, {to: "/tentang", className: "hover:text-[#FFE9B0] underline"}, "Tentang Bukuna")))))
+    React.createElement("main", {className: "bukuna-doodle-bg min-h-screen w-full flex flex-col items-center justify-center px-5 py-10"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-7 sm:p-10 shadow-2xl flex flex-col items-center text-center"}, React.createElement("div", {className: "flex flex-col items-center justify-center mb-6"}, React.createElement(Logo, {size: "md"})), React.createElement("h1", {className: "font-heading text-2xl sm:text-3xl font-extrabold text-[#FFE9B0]"}, "Selamat Datang di Bukuna!"), React.createElement("p", {className: "sub-section mt-2 text-white/90"}, "Platform cerita anak digital yang seru, mendidik, dan aman untuk mendampingi belajar di sekolah maupun di rumah."), React.createElement("div", {className: "w-full mt-8 flex flex-col gap-4"}, React.createElement("button", {type: "button", onClick: () => navigate('/masuk'), className: "w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-bold text-lg tracking-wide shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer"}, React.createElement(LogIn, {className: "w-5 h-5"}), React.createElement("span", null, "MASUK")), React.createElement("button", {type: "button", onClick: () => navigate('/daftar'), className: "w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#1FAFAA] hover:bg-[#179691] text-[#052625] font-heading font-extrabold text-lg tracking-wide shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2.5 cursor-pointer"}, React.createElement(UserPlus, {className: "w-5 h-5"}), React.createElement("span", null, "DAFTAR"))), React.createElement("div", {className: "w-full mt-6 pt-5 border-t border-white/15"}, isDemoMode && (
+            React.createElement("button", {type: "button", onClick: handleQuickDemo, className: "w-full mb-4 min-h-[46px] py-2.5 px-4 rounded-2xl bg-white/10 hover:bg-white/20 text-[#FFE9B0] text-sm font-bold transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"}, React.createElement(Sparkles, {className: "w-4 h-4"}), React.createElement("span", null, "Masuk Cepat sebagai Akun Demo (Bukuna Study)"))
+          ), React.createElement("div", {className: "flex items-center justify-center gap-4 text-xs text-white/80 font-semibold"}, React.createElement(Link, {to: "/beranda", className: "hover:text-[#FFE9B0] underline"}, "Lihat Beranda Langsung"), React.createElement("span", null, "•"), React.createElement(Link, {to: "/tentang", className: "hover:text-[#FFE9B0] underline"}, "Tentang Bukuna")))))
   );
 }
-
 
 
 // === MODULE: src/pages/LoginPage.jsx ===
@@ -7019,20 +7767,34 @@ function AuthChoicePage() {
 
 /**
  * Halaman 3: Masuk (sesuai File 1 Halaman 1 kanan)
- * Menggunakan komponen top-level <TextInput /> dengan state lokal yang stabil,
- * autoComplete & inputMode yang tepat, serta padding horizontal yang proporsional.
+ * - Masuk menggunakan Email + Kata Sandi melalui Supabase Auth (minimal 8 karakter)
+ * - Mendukung fitur "Lupa kata sandi?" (mengirim tautan reset ke email)
+ * - Mendukung pengaturan kata sandi baru jika pengguna membuka tautan recovery dari email
+ * - Tombol "Akun Demo" hanya ditampilkan jika aplikasi berjalan di Mode Demo
  */
 function LoginPage() {
   const navigate = useNavigate();
-  const { login, loginDemo } = useBukuna();
+  const {
+    login,
+    loginDemo,
+    isDemoMode,
+    requestPasswordReset,
+    isPasswordRecovery,
+    confirmNewPassword,
+  } = useBukuna();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const [error, setError] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
 
-  const validateAndSubmit = (e) => {
+  const validateAndSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setInfoMessage('');
 
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
@@ -7051,33 +7813,135 @@ function LoginPage() {
       return;
     }
 
-    if (password.length < 6) {
-      setError('Kata Sandi minimal terdiri dari 6 karakter.');
+    if (password.length < 8) {
+      setError('Kata Sandi minimal terdiri dari 8 karakter.');
       return;
     }
 
-    const res = login({ email: trimmedEmail, password });
-    if (!res.ok) {
-      setError(res.error);
+    setIsSubmitting(true);
+    try {
+      const res = await login({ email: trimmedEmail, password });
+      if (!res || !res.ok) {
+        setError((res && res.error) || 'Gagal masuk ke akun. Silakan periksa email dan kata sandi Anda.');
+        return;
+      }
+      navigate('/beranda');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleForgotPasswordSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setInfoMessage('');
+
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setError('Mohon isi alamat Email Anda untuk menerima tautan reset kata sandi.');
       return;
     }
 
-    navigate('/beranda');
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setError('Format alamat Email belum valid (contoh: nama@email.com).');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await requestPasswordReset(trimmedEmail);
+      if (!res || !res.ok) {
+        setError((res && res.error) || 'Gagal mengirim tautan reset kata sandi.');
+        return;
+      }
+      setInfoMessage(
+        res.message ||
+          `Tautan untuk mengatur ulang kata sandi telah dikirim ke ${trimmedEmail}. Silakan periksa kotak masuk atau folder spam email Anda.`
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRecoveryNewPassword = async (e) => {
+    e.preventDefault();
+    setError('');
+    setInfoMessage('');
+
+    if (!newPassword || newPassword.length < 8) {
+      setError('Kata Sandi baru minimal terdiri dari 8 karakter.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await confirmNewPassword(newPassword);
+      if (!res || !res.ok) {
+        setError((res && res.error) || 'Gagal memperbarui kata sandi.');
+        return;
+      }
+      navigate('/beranda');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleFillDemo = () => {
     setEmail('bukuna@gmail.com');
     setPassword('password123');
     setError('');
+    setInfoMessage('');
   };
 
   return (
-    React.createElement("main", {className: "bukuna-doodle-bg min-h-screen w-full flex flex-col items-center justify-center px-4 sm:px-6 py-8"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C]/85 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] px-5 sm:px-8 py-6 sm:py-8 shadow-2xl"}, React.createElement("div", {className: "flex items-center justify-between mb-2"}, React.createElement("button", {type: "button", onClick: () => navigate('/auth'), className: "inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-sm font-bold text-white transition-colors cursor-pointer"}, React.createElement(ArrowLeft, {className: "w-4 h-4"}), React.createElement("span", null, "Kembali")), React.createElement("button", {type: "button", onClick: handleFillDemo, className: "text-xs font-bold text-[#FFE9B0] hover:underline cursor-pointer min-h-[44px] px-2"}, "Isi Akun Demo")), React.createElement("div", {className: "flex flex-col items-center text-center"}, React.createElement(Logo, {size: "md", className: "mb-4"}), React.createElement("h1", {className: "font-heading text-2xl sm:text-3xl font-extrabold text-[#FFE9B0]"}, "Masuk ke Bukuna"), React.createElement("p", {className: "sub-section mt-1 text-white/85"}, "Masukkan email dan kata sandi untuk mulai membaca cerita seru")), error && (
+    React.createElement("main", {className: "bukuna-doodle-bg min-h-screen w-full flex flex-col items-center justify-center px-4 sm:px-6 py-8"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C]/85 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] px-5 sm:px-8 py-6 sm:py-8 shadow-2xl"}, React.createElement("div", {className: "flex items-center justify-between mb-2"}, React.createElement("button", {type: "button", onClick: () => {
+              if (forgotMode) {
+                setForgotMode(false);
+                setError('');
+                setInfoMessage('');
+              } else {
+                navigate('/auth');
+              }
+            }, className: "inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-sm font-bold text-white transition-colors cursor-pointer"}, React.createElement(ArrowLeft, {className: "w-4 h-4"}), React.createElement("span", null, forgotMode ? 'Kembali Masuk' : 'Kembali')), isDemoMode && !forgotMode && (
+            React.createElement("button", {type: "button", onClick: handleFillDemo, className: "text-xs font-bold text-[#FFE9B0] hover:underline cursor-pointer min-h-[44px] px-2"}, "Isi Akun Demo")
+          )), React.createElement("div", {className: "flex flex-col items-center text-center"}, React.createElement(Logo, {size: "md", className: "mb-4"}), React.createElement("h1", {className: "font-heading text-2xl sm:text-3xl font-extrabold text-[#FFE9B0]"}, isPasswordRecovery
+              ? 'Atur Kata Sandi Baru'
+              : forgotMode
+              ? 'Lupa Kata Sandi'
+              : 'Masuk ke Bukuna'), React.createElement("p", {className: "sub-section mt-1 text-white/85"}, isPasswordRecovery
+              ? 'Masukkan kata sandi baru (minimal 8 karakter) untuk akun BUKUNA Anda'
+              : forgotMode
+              ? 'Masukkan alamat email akun Anda, kami akan mengirimkan tautan untuk mengatur ulang kata sandi'
+              : 'Masukkan email dan kata sandi akun Guru atau Orang Tua untuk mulai membaca cerita seru')), error && (
           React.createElement("div", {role: "alert", className: "sub-help mt-5 p-3.5 rounded-2xl bg-red-500/20 border-2 border-red-300 text-white flex items-start gap-2.5 text-left"}, React.createElement(AlertCircle, {className: "w-5 h-5 text-[#FFE9B0] shrink-0 mt-0.5"}), React.createElement("span", null, error))
-        ), React.createElement("form", {onSubmit: validateAndSubmit, noValidate: true, className: "mt-6 flex flex-col gap-4 w-full"}, React.createElement(TextInput, {id: "login-email", name: "email", label: "Alamat Email", type: "email", inputMode: "email", autoComplete: "email", value: email, onChange: (e) => setEmail(e.target.value), placeholder: "nama@email.com", icon: Mail}), React.createElement(TextInput, {id: "login-password", name: "password", label: "Kata Sandi (Password)", type: "password", inputMode: "text", autoComplete: "current-password", value: password, onChange: (e) => setPassword(e.target.value), placeholder: "Minimal 6 karakter", icon: Lock, showPasswordToggle: true}), React.createElement("button", {type: "submit", className: "mt-2 w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-lg tracking-wider shadow-lg hover:shadow-xl transition-all cursor-pointer"}, "MASUK")), React.createElement("div", {className: "mt-6 text-center text-sm text-white/90"}, "Belum punya akun?", ' ', React.createElement(Link, {to: "/daftar", className: "font-extrabold text-[#FFE9B0] hover:underline"}, "Daftar Sekarang")), React.createElement("div", {className: "mt-3 text-center"}, React.createElement("button", {type: "button", onClick: () => {
-              loginDemo();
-              navigate('/beranda');
-            }, className: "text-xs font-bold text-white/80 hover:text-[#FFE9B0] underline cursor-pointer py-2"}, "Lewati & Masuk dengan Akun Demo Bukuna Study"))))
+        ), infoMessage && (
+          React.createElement("div", {role: "status", className: "sub-help mt-5 p-3.5 rounded-2xl bg-[#1FAFAA]/25 border-2 border-[#FFE9B0] text-white flex items-start gap-2.5 text-left"}, React.createElement(CheckCircle2, {className: "w-5 h-5 text-[#FFE9B0] shrink-0 mt-0.5"}), React.createElement("span", null, infoMessage))
+        ), isPasswordRecovery ? (
+          /* Form Pengaturan Kata Sandi Baru dari Tautan Email */
+          React.createElement("form", {onSubmit: handleRecoveryNewPassword, noValidate: true, className: "mt-6 flex flex-col gap-4 w-full"}, React.createElement(TextInput, {id: "recovery-new-password", name: "newPassword", label: "Kata Sandi Baru", type: "password", inputMode: "text", autoComplete: "new-password", value: newPassword, onChange: (e) => setNewPassword(e.target.value), placeholder: "Minimal 8 karakter", icon: Lock, showPasswordToggle: true}), React.createElement("button", {type: "submit", disabled: isSubmitting, className: "mt-2 w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-lg tracking-wider shadow-lg hover:shadow-xl transition-all cursor-pointer"}, isSubmitting ? 'MENYIMPAN...' : 'SIMPAN KATA SANDI BARU'))
+        ) : forgotMode ? (
+          /* Form Lupa Kata Sandi */
+          React.createElement("form", {onSubmit: handleForgotPasswordSubmit, noValidate: true, className: "mt-6 flex flex-col gap-4 w-full"}, React.createElement(TextInput, {id: "reset-email", name: "email", label: "Alamat Email Terdaftar", type: "email", inputMode: "email", autoComplete: "email", value: email, onChange: (e) => setEmail(e.target.value), placeholder: "nama@email.com", icon: Mail}), React.createElement("button", {type: "submit", disabled: isSubmitting, className: "mt-2 w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-lg tracking-wider shadow-lg hover:shadow-xl transition-all cursor-pointer"}, isSubmitting ? 'MENGIRIM TAUTAN...' : 'KIRIM TAUTAN RESET'), React.createElement("button", {type: "button", onClick: () => {
+                setForgotMode(false);
+                setError('');
+                setInfoMessage('');
+              }, className: "w-full min-h-[44px] py-2 text-center text-sm font-bold text-[#FFE9B0] hover:underline cursor-pointer"}, "Kembali ke Halaman Masuk"))
+        ) : (
+          /* Form Masuk Utama */
+          React.createElement("form", {onSubmit: validateAndSubmit, noValidate: true, className: "mt-6 flex flex-col gap-4 w-full"}, React.createElement(TextInput, {id: "login-email", name: "email", label: "Alamat Email", type: "email", inputMode: "email", autoComplete: "email", value: email, onChange: (e) => setEmail(e.target.value), placeholder: "nama@email.com", icon: Mail}), React.createElement("div", null, React.createElement(TextInput, {id: "login-password", name: "password", label: "Kata Sandi (Password)", type: "password", inputMode: "text", autoComplete: "current-password", value: password, onChange: (e) => setPassword(e.target.value), placeholder: "Minimal 8 karakter", icon: Lock, showPasswordToggle: true}), React.createElement("div", {className: "mt-1.5 flex justify-end"}, React.createElement("button", {type: "button", onClick: () => {
+                    setForgotMode(true);
+                    setError('');
+                    setInfoMessage('');
+                  }, className: "text-xs font-extrabold text-[#FFE9B0] hover:underline cursor-pointer py-1 px-1"}, "Lupa kata sandi?"))), React.createElement("button", {type: "submit", disabled: isSubmitting, className: "mt-1 w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-lg tracking-wider shadow-lg hover:shadow-xl transition-all cursor-pointer"}, isSubmitting ? 'MEMPROSES...' : 'MASUK'))
+        ), React.createElement("div", {className: "mt-6 text-center text-sm text-white/90"}, "Belum punya akun?", ' ', React.createElement(Link, {to: "/daftar", className: "font-extrabold text-[#FFE9B0] hover:underline"}, "Daftar Sekarang")), isDemoMode && (
+          React.createElement("div", {className: "mt-3 text-center"}, React.createElement("button", {type: "button", onClick: () => {
+                const res = loginDemo();
+                if (res && res.ok) {
+                  navigate('/beranda');
+                }
+              }, className: "text-xs font-bold text-white/80 hover:text-[#FFE9B0] underline cursor-pointer py-2"}, "Lewati & Masuk dengan Akun Demo Bukuna Study"))
+        )))
   );
 }
 
@@ -7091,9 +7955,10 @@ function LoginPage() {
 
 /**
  * Halaman 4: Daftar (sesuai File 1 Halaman 2)
- * Menggunakan komponen reusable <TextInput /> di level atas, padding horizontal memadai
- * (px-4 di mobile, px-6 di tablet/desktop), label sejajar dengan tepi kiri input,
- * dan placeholder natural (tidak huruf kapital semua).
+ * - Menggunakan komponen reusable <TextInput /> di level atas (Nama Akun, Email, Password)
+ * - Validasi: email valid, kata sandi minimal 8 karakter
+ * - Keterangan bahwa akun ditujukan untuk guru dan orang tua, bukan anak
+ * - Kotak centang wajib "Saya menyetujui Kebijakan BUKUNA"
  */
 function RegisterPage() {
   const navigate = useNavigate();
@@ -7102,11 +7967,15 @@ function RegisterPage() {
   const [nama, setNama] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [agreedPolicy, setAgreedPolicy] = useState(false);
   const [error, setError] = useState('');
+  const [confirmationMessage, setConfirmationMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setConfirmationMessage('');
 
     if (!nama.trim() || nama.trim().length < 2) {
       setError('Mohon isi Nama Akun minimal 2 karakter.');
@@ -7125,24 +7994,47 @@ function RegisterPage() {
       return;
     }
 
-    if (!password || password.length < 6) {
-      setError('Kata Sandi minimal terdiri dari 6 karakter agar akunmu aman.');
+    if (!password || password.length < 8) {
+      setError('Kata Sandi minimal terdiri dari 8 karakter agar akunmu aman.');
       return;
     }
 
-    const res = register({ nama: nama.trim(), email: trimmedEmail, password });
-    if (!res.ok) {
-      setError(res.error);
+    if (!agreedPolicy) {
+      setError('Mohon centang persetujuan "Saya menyetujui Kebijakan BUKUNA" terlebih dahulu.');
       return;
     }
 
-    navigate('/beranda');
+    setIsSubmitting(true);
+    try {
+      const res = await register({ nama: nama.trim(), email: trimmedEmail, password });
+      if (!res || !res.ok) {
+        setError((res && res.error) || 'Pendaftaran belum berhasil. Silakan coba lagi.');
+        return;
+      }
+
+      if (res.needsEmailConfirmation) {
+        setConfirmationMessage(
+          res.message ||
+            `Pendaftaran berhasil! Silakan periksa kotak masuk email ${trimmedEmail} untuk mengonfirmasi akun Anda sebelum masuk.`
+        );
+        return;
+      }
+
+      navigate('/beranda');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    React.createElement("main", {className: "bukuna-doodle-bg min-h-screen w-full flex flex-col items-center justify-center px-4 sm:px-6 py-8"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C]/85 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] px-5 sm:px-8 py-6 sm:py-8 shadow-2xl"}, React.createElement("div", {className: "flex items-center justify-between mb-2"}, React.createElement("button", {type: "button", onClick: () => navigate('/auth'), className: "inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-sm font-bold text-white transition-colors cursor-pointer"}, React.createElement(ArrowLeft, {className: "w-4 h-4"}), React.createElement("span", null, "Kembali"))), React.createElement("div", {className: "flex flex-col items-center text-center"}, React.createElement(Logo, {size: "md", className: "mb-4"}), React.createElement("h1", {className: "font-heading text-2xl sm:text-3xl font-extrabold text-[#FFE9B0]"}, "Daftar Akun Baru"), React.createElement("p", {className: "sub-section mt-1 text-white/85"}, "Buat akun untuk menyimpan koleksi dan cerita favorit pilihanmu")), error && (
-          React.createElement("div", {role: "alert", className: "sub-help mt-5 p-3.5 rounded-2xl bg-red-500/20 border-2 border-red-300 text-white flex items-start gap-2.5 text-left"}, React.createElement(AlertCircle, {className: "w-5 h-5 text-[#FFE9B0] shrink-0 mt-0.5"}), React.createElement("span", null, error))
-        ), React.createElement("form", {onSubmit: handleSubmit, noValidate: true, className: "mt-6 flex flex-col gap-4 w-full"}, React.createElement(TextInput, {id: "reg-nama", name: "nama", label: "Nama Akun", type: "text", inputMode: "text", autoComplete: "name", value: nama, onChange: (e) => setNama(e.target.value), placeholder: "Contoh: Ibu Guru Rini", icon: User}), React.createElement(TextInput, {id: "reg-email", name: "email", label: "Alamat Email", type: "email", inputMode: "email", autoComplete: "email", value: email, onChange: (e) => setEmail(e.target.value), placeholder: "nama@email.com", icon: Mail}), React.createElement(TextInput, {id: "reg-password", name: "password", label: "Kata Sandi (Password)", type: "password", inputMode: "text", autoComplete: "new-password", value: password, onChange: (e) => setPassword(e.target.value), placeholder: "Minimal 6 karakter", icon: Lock, showPasswordToggle: true}), React.createElement("button", {type: "submit", className: "mt-2 w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-lg tracking-wider shadow-lg hover:shadow-xl transition-all cursor-pointer"}, "DAFTAR")), React.createElement("div", {className: "mt-6 text-center text-sm text-white/90"}, "Sudah punya akun?", ' ', React.createElement(Link, {to: "/masuk", className: "font-extrabold text-[#FFE9B0] hover:underline"}, "Masuk di sini"))))
+    React.createElement("main", {className: "bukuna-doodle-bg min-h-screen w-full flex flex-col items-center justify-center px-4 sm:px-6 py-8"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C]/85 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] px-5 sm:px-8 py-6 sm:py-8 shadow-2xl"}, React.createElement("div", {className: "flex items-center justify-between mb-2"}, React.createElement("button", {type: "button", onClick: () => navigate('/auth'), className: "inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-sm font-bold text-white transition-colors cursor-pointer"}, React.createElement(ArrowLeft, {className: "w-4 h-4"}), React.createElement("span", null, "Kembali"))), React.createElement("div", {className: "flex flex-col items-center text-center"}, React.createElement(Logo, {size: "md", className: "mb-4"}), React.createElement("h1", {className: "font-heading text-2xl sm:text-3xl font-extrabold text-[#FFE9B0]"}, "Daftar Akun Baru"), React.createElement("p", {className: "sub-section mt-1 text-white/85"}, "Buat akun untuk menyimpan koleksi dan cerita favorit pilihanmu")), React.createElement("div", {className: "mt-4 rounded-2xl bg-[#062D2C]/85 border border-[#1FAFAA]/60 p-3.5 flex items-start gap-2.5 text-left"}, React.createElement(ShieldCheck, {className: "w-5 h-5 text-[#FFE9B0] shrink-0 mt-0.5"}), React.createElement("p", {className: "sub-help text-white/95"}, "Akun ditujukan untuk ", React.createElement("strong", {className: "text-[#FFE9B0]"}, "guru dan orang tua"), ", bukan anak. Pendamping dewasa mengelola akun untuk membacakan cerita bersama anak.")), error && (
+          React.createElement("div", {role: "alert", className: "sub-help mt-4 p-3.5 rounded-2xl bg-red-500/20 border-2 border-red-300 text-white flex items-start gap-2.5 text-left"}, React.createElement(AlertCircle, {className: "w-5 h-5 text-[#FFE9B0] shrink-0 mt-0.5"}), React.createElement("span", null, error))
+        ), confirmationMessage ? (
+          React.createElement("div", {className: "mt-5 p-5 rounded-3xl bg-[#062D2C]/90 border-2 border-[#FFE9B0] text-center space-y-4"}, React.createElement(CheckCircle2, {className: "w-12 h-12 text-[#1FAFAA] mx-auto"}), React.createElement("h2", {className: "font-heading font-extrabold text-xl text-[#FFE9B0]"}, "Cek Email Konfirmasi Anda"), React.createElement("p", {className: "sub-section text-white/95"}, confirmationMessage), React.createElement("button", {type: "button", onClick: () => navigate('/masuk'), className: "w-full min-h-[50px] py-3 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-base shadow-lg cursor-pointer"}, "Ke Halaman Masuk"))
+        ) : (
+          /* Form Daftar menggunakan komponen reusable TextInput */
+          React.createElement("form", {onSubmit: handleSubmit, noValidate: true, className: "mt-5 flex flex-col gap-4 w-full"}, React.createElement(TextInput, {id: "reg-nama", name: "nama", label: "Nama Akun", type: "text", inputMode: "text", autoComplete: "name", value: nama, onChange: (e) => setNama(e.target.value), placeholder: "Contoh: Ibu Guru Rini", icon: User}), React.createElement(TextInput, {id: "reg-email", name: "email", label: "Alamat Email", type: "email", inputMode: "email", autoComplete: "email", value: email, onChange: (e) => setEmail(e.target.value), placeholder: "nama@email.com", icon: Mail}), React.createElement(TextInput, {id: "reg-password", name: "password", label: "Kata Sandi (Password)", type: "password", inputMode: "text", autoComplete: "new-password", value: password, onChange: (e) => setPassword(e.target.value), placeholder: "Minimal 8 karakter", icon: Lock, showPasswordToggle: true}), React.createElement("label", {htmlFor: "reg-policy-checkbox", className: "mt-1 flex items-start gap-3 p-3 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/20 cursor-pointer select-none text-left transition-colors"}, React.createElement("input", {id: "reg-policy-checkbox", name: "agreedPolicy", type: "checkbox", checked: agreedPolicy, onChange: (e) => setAgreedPolicy(e.target.checked), className: "mt-0.5 w-5 h-5 rounded accent-[#E07030] shrink-0 cursor-pointer"}), React.createElement("span", {className: "sub-help text-white/95"}, "Saya adalah guru atau orang tua/wali dan", ' ', React.createElement("strong", {className: "text-[#FFE9B0]"}, "Saya menyetujui Kebijakan BUKUNA"), ".")), React.createElement("button", {type: "submit", disabled: isSubmitting, className: "mt-1 w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-lg tracking-wider shadow-lg hover:shadow-xl transition-all cursor-pointer"}, isSubmitting ? 'MENDAFTARKAN...' : 'DAFTAR'))
+        ), React.createElement("div", {className: "mt-6 text-center text-sm text-white/90"}, "Sudah punya akun?", ' ', React.createElement(Link, {to: "/masuk", className: "font-extrabold text-[#FFE9B0] hover:underline"}, "Masuk di sini"))))
   );
 }
 
@@ -7407,14 +8299,14 @@ function formatQuizDate(isoStr) {
 /**
  * Halaman 8: Akun / Profil Pengguna (sesuai File 1 Hal 3 kanan & File 2 Hal 2 tengah)
  * - Avatar ilustrasi kucing lucu di lingkaran tengah atas
- * - Nama pengguna & email di bawah avatar
+ * - Nama pengguna, email, dan badge peran (guru/editor/admin) di bawah avatar
  * - Panel kontainer membulat berisi menu:
  *   • Cerita Saya (/cerita-saya) + tombol "+ Buat Cerita"
  *   • Hasil Kuis (perkembangan bintang kuis anak)
  *   • Cerita Favorit
  *   • Koleksi
  *   • Riwayat Bacaan (menyimpan halaman terakhir yang dibaca)
- *   • Keluar Akun
+ *   • Keluar Akun (atau Masuk / Daftar jika belum login)
  */
 function ProfilePage() {
   const navigate = useNavigate();
@@ -7441,8 +8333,10 @@ function ProfilePage() {
     })
     .filter(Boolean);
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    if (user) {
+      await logout();
+    }
     navigate('/auth');
   };
 
@@ -7456,11 +8350,17 @@ function ProfilePage() {
   };
 
   return (
-    React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[960px] mx-auto px-4 sm:px-6 pt-2 pb-8"}, React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-12 gap-6 items-start"}, React.createElement("section", {className: "md:col-span-5 bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-6 text-center shadow-2xl flex flex-col items-center"}, React.createElement(CatAvatar, {size: "lg", className: "mt-1"}), React.createElement("h1", {className: "mt-4 font-heading font-extrabold text-2xl text-[#FFE9B0]"}, user ? user.name : 'Tamu Bukuna'), React.createElement("p", {className: "sub-label text-white/85 mt-0.5"}, user ? user.email : 'Belum masuk akun'), React.createElement("button", {type: "button", onClick: handleCreateNewStory, className: "mt-4 w-full min-h-[48px] px-5 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-sm sm:text-base shadow-lg flex items-center justify-center gap-2 transition-all cursor-pointer"}, React.createElement(Plus, {className: "w-5 h-5"}), React.createElement("span", null, "+ Buat Cerita Sendiri")), React.createElement("div", {className: "w-full mt-5 bg-[#1FAFAA] rounded-[26px] overflow-hidden shadow-inner border-2 border-white/20 divide-y-2 divide-white/50 text-[#052625]"}, React.createElement("button", {type: "button", onClick: () => navigate('/cerita-saya'), className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer bg-[#FFE9B0]/25"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Edit3, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Cerita Saya")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#062D2C] text-[#FFE9B0] text-xs font-extrabold"}, myStories.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => setActiveSection('kuis'), className: `w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer ${
+    React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[960px] mx-auto px-4 sm:px-6 pt-2 pb-8"}, React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-12 gap-6 items-start"}, React.createElement("section", {className: "md:col-span-5 bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-6 text-center shadow-2xl flex flex-col items-center"}, React.createElement(CatAvatar, {size: "lg", className: "mt-1"}), React.createElement("h1", {className: "mt-4 font-heading font-extrabold text-2xl text-[#FFE9B0]"}, user ? user.nama || user.name : 'Tamu Bukuna'), React.createElement("p", {className: "sub-label text-white/85 mt-0.5"}, user ? user.email : 'Belum masuk akun'), user && user.peran && (
+              React.createElement("span", {className: "mt-2 px-3 py-0.5 rounded-full bg-[#062D2C] border border-[#1FAFAA] text-xs font-extrabold uppercase tracking-wider text-[#FFE9B0]"}, "Peran: ", user.peran)
+            ), React.createElement("button", {type: "button", onClick: handleCreateNewStory, className: "mt-4 w-full min-h-[48px] px-5 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-sm sm:text-base shadow-lg flex items-center justify-center gap-2 transition-all cursor-pointer"}, React.createElement(Plus, {className: "w-5 h-5"}), React.createElement("span", null, "+ Buat Cerita Sendiri")), React.createElement("div", {className: "w-full mt-5 bg-[#1FAFAA] rounded-[26px] overflow-hidden shadow-inner border-2 border-white/20 divide-y-2 divide-white/50 text-[#052625]"}, React.createElement("button", {type: "button", onClick: () => navigate('/cerita-saya'), className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer bg-[#FFE9B0]/25"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Edit3, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Cerita Saya")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#062D2C] text-[#FFE9B0] text-xs font-extrabold"}, myStories.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => setActiveSection('kuis'), className: `w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer ${
                   activeSection === 'kuis' ? 'bg-black/15' : 'bg-[#FFE9B0]/15'
                 }`}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Star, {className: "w-5 h-5 stroke-[2.4] fill-[#E07030] text-[#052625]"}), React.createElement("span", null, "Hasil Kuis")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#E07030] text-white text-xs font-extrabold"}, quizResults.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => navigate('/favorit'), className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Heart, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Cerita Favorit")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#062D2C]/15"}, favorites.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => navigate('/koleksi'), className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(List, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Koleksi")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#062D2C]/15"}, collections.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => setActiveSection('riwayat'), className: `w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer ${
                   activeSection === 'riwayat' ? 'bg-black/15' : ''
-                }`}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Clock, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Riwayat Bacaan")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#062D2C]/15"}, historyItems.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: handleLogout, className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base text-[#062D2C] hover:bg-[#E07030] hover:text-white transition-colors cursor-pointer"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(LogOut, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Keluar Akun")), React.createElement(ChevronRight, {className: "w-4 h-4"})))), React.createElement("section", {className: "md:col-span-7 bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-5 sm:p-6 shadow-2xl"}, React.createElement("div", {className: "flex flex-wrap items-center gap-2 mb-5"}, React.createElement("button", {type: "button", onClick: () => setActiveSection('riwayat'), className: `min-h-[42px] px-4 py-2 rounded-full font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-all cursor-pointer ${
+                }`}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Clock, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Riwayat Bacaan")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#062D2C]/15"}, historyItems.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: handleLogout, className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base text-[#062D2C] hover:bg-[#E07030] hover:text-white transition-colors cursor-pointer"}, React.createElement("span", {className: "flex items-center gap-3.5"}, user ? (
+                    React.createElement(LogOut, {className: "w-5 h-5 stroke-[2.4]"})
+                  ) : (
+                    React.createElement(LogIn, {className: "w-5 h-5 stroke-[2.4]"})
+                  ), React.createElement("span", null, user ? 'Keluar Akun' : 'Masuk / Daftar Akun')), React.createElement(ChevronRight, {className: "w-4 h-4"})))), React.createElement("section", {className: "md:col-span-7 bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-5 sm:p-6 shadow-2xl"}, React.createElement("div", {className: "flex flex-wrap items-center gap-2 mb-5"}, React.createElement("button", {type: "button", onClick: () => setActiveSection('riwayat'), className: `min-h-[42px] px-4 py-2 rounded-full font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-all cursor-pointer ${
                   activeSection === 'riwayat'
                     ? 'bg-[#E07030] text-white shadow-md'
                     : 'bg-[#062D2C]/70 text-[#FFE9B0] hover:bg-[#062D2C]'
@@ -8768,9 +9668,18 @@ function ToastNotification() {
   );
 }
 
+function DemoModeBanner() {
+  const { isDemoMode } = useBukuna();
+  if (!isDemoMode) return null;
+
+  return (
+    React.createElement("div", {role: "status", "aria-label": "Mode demo aktif", className: "w-full bg-[#062D2C] border-b border-[#1FAFAA]/40 px-4 py-1.5 text-center text-xs font-heading font-bold text-[#FFE9B0] flex items-center justify-center gap-2 z-40"}, React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#E07030] text-white text-[11px] font-extrabold uppercase tracking-wider"}, "Mode demo"), React.createElement("span", {className: "text-white/90"}, "Berjalan dengan simulasi akun lokal (tanpa koneksi server Supabase)."))
+  );
+}
+
 function App() {
   return (
-    React.createElement(BukunaProvider, null, React.createElement(ToastNotification, null), React.createElement(Routes, null, React.createElement(Route, {path: "/", element: React.createElement(SplashPage, null)}), React.createElement(Route, {path: "/auth", element: React.createElement(AuthChoicePage, null)}), React.createElement(Route, {path: "/masuk", element: React.createElement(LoginPage, null)}), React.createElement(Route, {path: "/daftar", element: React.createElement(RegisterPage, null)}), React.createElement(Route, {path: "/beranda", element: React.createElement(HomePage, null)}), React.createElement(Route, {path: "/koleksi", element: React.createElement(CollectionPage, null)}), React.createElement(Route, {path: "/favorit", element: React.createElement(FavoritesPage, null)}), React.createElement(Route, {path: "/akun", element: React.createElement(ProfilePage, null)}), React.createElement(Route, {path: "/cerita-saya", element: React.createElement(MyStories, null)}), React.createElement(Route, {path: "/cerita/buat", element: React.createElement(CreateStory, null)}), React.createElement(Route, {path: "/cerita/:id/edit", element: React.createElement(EditStory, null)}), React.createElement(Route, {path: "/kuis", element: React.createElement(QuizHubPage, null)}), React.createElement(Route, {path: "/kuis/:storyId", element: React.createElement(QuizPlayPage, null)}), React.createElement(Route, {path: "/cerita/:id", element: React.createElement(StoryDetailPage, null)}), React.createElement(Route, {path: "/baca/:id", element: React.createElement(ReadStoryPage, null)}), React.createElement(Route, {path: "/selesai/:id", element: React.createElement(FinishStoryPage, null)}), React.createElement(Route, {path: "/tentang", element: React.createElement(AboutPage, null)}), React.createElement(Route, {path: "/pencarian", element: React.createElement(SearchPage, null)}), React.createElement(Route, {path: "*", element: React.createElement(Navigate, {to: "/beranda", replace: true})})))
+    React.createElement(BukunaProvider, null, React.createElement(DemoModeBanner, null), React.createElement(ToastNotification, null), React.createElement(Routes, null, React.createElement(Route, {path: "/", element: React.createElement(SplashPage, null)}), React.createElement(Route, {path: "/auth", element: React.createElement(AuthChoicePage, null)}), React.createElement(Route, {path: "/masuk", element: React.createElement(LoginPage, null)}), React.createElement(Route, {path: "/daftar", element: React.createElement(RegisterPage, null)}), React.createElement(Route, {path: "/beranda", element: React.createElement(HomePage, null)}), React.createElement(Route, {path: "/koleksi", element: React.createElement(CollectionPage, null)}), React.createElement(Route, {path: "/favorit", element: React.createElement(FavoritesPage, null)}), React.createElement(Route, {path: "/akun", element: React.createElement(ProfilePage, null)}), React.createElement(Route, {path: "/cerita-saya", element: React.createElement(MyStories, null)}), React.createElement(Route, {path: "/cerita/buat", element: React.createElement(CreateStory, null)}), React.createElement(Route, {path: "/cerita/:id/edit", element: React.createElement(EditStory, null)}), React.createElement(Route, {path: "/kuis", element: React.createElement(QuizHubPage, null)}), React.createElement(Route, {path: "/kuis/:storyId", element: React.createElement(QuizPlayPage, null)}), React.createElement(Route, {path: "/cerita/:id", element: React.createElement(StoryDetailPage, null)}), React.createElement(Route, {path: "/baca/:id", element: React.createElement(ReadStoryPage, null)}), React.createElement(Route, {path: "/selesai/:id", element: React.createElement(FinishStoryPage, null)}), React.createElement(Route, {path: "/tentang", element: React.createElement(AboutPage, null)}), React.createElement(Route, {path: "/pencarian", element: React.createElement(SearchPage, null)}), React.createElement(Route, {path: "*", element: React.createElement(Navigate, {to: "/beranda", replace: true})})))
   );
 }
 

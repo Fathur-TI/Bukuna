@@ -7,14 +7,17 @@ import { useBukuna } from '../context/BukunaContext';
 /**
  * Halaman 2: Pilih Masuk / Daftar (sesuai File 1 Halaman 1 kiri)
  * Logo bulat di tengah, dua tombol besar: "Masuk" dan "Daftar".
+ * Tombol "Masuk Cepat sebagai Akun Demo" HANYA ditampilkan jika berada di Mode Demo.
  */
 export default function AuthChoicePage() {
   const navigate = useNavigate();
-  const { loginDemo } = useBukuna();
+  const { loginDemo, isDemoMode } = useBukuna();
 
   const handleQuickDemo = () => {
-    loginDemo();
-    navigate('/beranda');
+    const res = loginDemo();
+    if (res && res.ok) {
+      navigate('/beranda');
+    }
   };
 
   return (
@@ -53,18 +56,20 @@ export default function AuthChoicePage() {
           </button>
         </div>
 
-        {/* Opsi Cepat Masuk Mode Demo / Guru */}
+        {/* Tautan Bawah (+ Opsi Cepat Masuk Mode Demo HANYA di Mode Demo) */}
         <div className="w-full mt-6 pt-5 border-t border-white/15">
-          <button
-            type="button"
-            onClick={handleQuickDemo}
-            className="w-full min-h-[46px] py-2.5 px-4 rounded-2xl bg-white/10 hover:bg-white/20 text-[#FFE9B0] text-sm font-bold transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>Masuk Cepat sebagai Akun Demo (Bukuna Study)</span>
-          </button>
+          {isDemoMode && (
+            <button
+              type="button"
+              onClick={handleQuickDemo}
+              className="w-full mb-4 min-h-[46px] py-2.5 px-4 rounded-2xl bg-white/10 hover:bg-white/20 text-[#FFE9B0] text-sm font-bold transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Masuk Cepat sebagai Akun Demo (Bukuna Study)</span>
+            </button>
+          )}
 
-          <div className="mt-4 flex items-center justify-center gap-4 text-xs text-white/80 font-semibold">
+          <div className="flex items-center justify-center gap-4 text-xs text-white/80 font-semibold">
             <Link to="/beranda" className="hover:text-[#FFE9B0] underline">
               Lihat Beranda Langsung
             </Link>
@@ -78,4 +83,3 @@ export default function AuthChoicePage() {
     </main>
   );
 }
-

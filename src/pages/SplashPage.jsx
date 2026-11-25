@@ -10,9 +10,10 @@ import { useBukuna } from '../context/BukunaContext';
  */
 export default function SplashPage() {
   const navigate = useNavigate();
-  const { user } = useBukuna();
+  const { user, authLoading } = useBukuna();
 
   useEffect(() => {
+    if (authLoading) return undefined;
     const timer = setTimeout(() => {
       if (user) {
         navigate('/beranda', { replace: true });
@@ -22,9 +23,10 @@ export default function SplashPage() {
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, [navigate, user]);
+  }, [navigate, user, authLoading]);
 
   const handleSkip = () => {
+    if (authLoading) return;
     navigate(user ? '/beranda' : '/auth', { replace: true });
   };
 
@@ -61,4 +63,3 @@ export default function SplashPage() {
     </main>
   );
 }
-

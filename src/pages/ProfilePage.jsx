@@ -5,6 +5,7 @@ import {
   List,
   Clock,
   LogOut,
+  LogIn,
   ChevronRight,
   BookOpen,
   CheckCircle2,
@@ -37,14 +38,14 @@ function formatQuizDate(isoStr) {
 /**
  * Halaman 8: Akun / Profil Pengguna (sesuai File 1 Hal 3 kanan & File 2 Hal 2 tengah)
  * - Avatar ilustrasi kucing lucu di lingkaran tengah atas
- * - Nama pengguna & email di bawah avatar
+ * - Nama pengguna, email, dan badge peran (guru/editor/admin) di bawah avatar
  * - Panel kontainer membulat berisi menu:
  *   • Cerita Saya (/cerita-saya) + tombol "+ Buat Cerita"
  *   • Hasil Kuis (perkembangan bintang kuis anak)
  *   • Cerita Favorit
  *   • Koleksi
  *   • Riwayat Bacaan (menyimpan halaman terakhir yang dibaca)
- *   • Keluar Akun
+ *   • Keluar Akun (atau Masuk / Daftar jika belum login)
  */
 export default function ProfilePage() {
   const navigate = useNavigate();
@@ -71,8 +72,10 @@ export default function ProfilePage() {
     })
     .filter(Boolean);
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    if (user) {
+      await logout();
+    }
     navigate('/auth');
   };
 
@@ -97,11 +100,17 @@ export default function ProfilePage() {
             <CatAvatar size="lg" className="mt-1" />
 
             <h1 className="mt-4 font-heading font-extrabold text-2xl text-[#FFE9B0]">
-              {user ? user.name : 'Tamu Bukuna'}
+              {user ? user.nama || user.name : 'Tamu Bukuna'}
             </h1>
             <p className="sub-label text-white/85 mt-0.5">
               {user ? user.email : 'Belum masuk akun'}
             </p>
+
+            {user && user.peran && (
+              <span className="mt-2 px-3 py-0.5 rounded-full bg-[#062D2C] border border-[#1FAFAA] text-xs font-extrabold uppercase tracking-wider text-[#FFE9B0]">
+                Peran: {user.peran}
+              </span>
+            )}
 
             {/* Tombol Cepat "+ Buat Cerita" */}
             <button
@@ -209,15 +218,19 @@ export default function ProfilePage() {
                 </span>
               </button>
 
-              {/* Menu 5: Keluar Akun */}
+              {/* Menu 5: Keluar Akun (atau Masuk / Daftar jika belum login) */}
               <button
                 type="button"
                 onClick={handleLogout}
                 className="w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base text-[#062D2C] hover:bg-[#E07030] hover:text-white transition-colors cursor-pointer"
               >
                 <span className="flex items-center gap-3.5">
-                  <LogOut className="w-5 h-5 stroke-[2.4]" />
-                  <span>Keluar Akun</span>
+                  {user ? (
+                    <LogOut className="w-5 h-5 stroke-[2.4]" />
+                  ) : (
+                    <LogIn className="w-5 h-5 stroke-[2.4]" />
+                  )}
+                  <span>{user ? 'Keluar Akun' : 'Masuk / Daftar Akun'}</span>
                 </span>
                 <ChevronRight className="w-4 h-4" />
               </button>

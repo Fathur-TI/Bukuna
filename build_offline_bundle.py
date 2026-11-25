@@ -9,6 +9,8 @@ import re
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODULE_ORDER = [
+    "src/lib/supabaseClient.js",
+    "src/services/authService.js",
     "src/data/stories.js",
     "src/data/quizzes.js",
     "src/services/storyStorage.js",
@@ -535,6 +537,9 @@ OFFLINE_REACT_AND_SHIMS = r"""
         } else if (k === 'className') {
           if (isSvg) el.removeAttribute('class');
           else el.className = '';
+        if (k === 'checked') {
+          el.checked = Boolean(val);
+          return;
         } else if (k === 'disabled') {
           el.disabled = false;
           el.removeAttribute('disabled');
@@ -573,8 +578,14 @@ OFFLINE_REACT_AND_SHIMS = r"""
       }
       if (k.startsWith('on') && typeof val === 'function') {
         const rawEvt = k.slice(2).toLowerCase();
-        const isFileOrSelect = tag === 'select' || (tag === 'input' && (newProps.type === 'file' || el.type === 'file'));
-        const evt = rawEvt === 'change' && (tag === 'input' || tag === 'textarea') && !isFileOrSelect ? 'input' : rawEvt;
+        const isFileOrSelectOrCheckbox =
+          tag === 'select' ||
+          (tag === 'input' &&
+            (newProps.type === 'file' ||
+              el.type === 'file' ||
+              newProps.type === 'checkbox' ||
+              el.type === 'checkbox'));
+        const evt = rawEvt === 'change' && (tag === 'input' || tag === 'textarea') && !isFileOrSelectOrCheckbox ? 'input' : rawEvt;
         el._handlers[evt] = val;
         if (!el._bound[evt]) {
           el._bound[evt] = (e) => {
@@ -591,6 +602,10 @@ OFFLINE_REACT_AND_SHIMS = r"""
         if (el.value !== strVal) {
           el.value = strVal;
         }
+        return;
+      }
+      if (k === 'checked') {
+        el.checked = Boolean(val);
         return;
       }
       if (k === 'disabled') {

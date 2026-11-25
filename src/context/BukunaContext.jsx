@@ -11,12 +11,21 @@ import {
   preloadAllStoryImages,
   subscribeStoryStorage,
 } from '../services/storyStorage';
+import {
+  isAuthInDemoMode,
+  getCurrentSessionUser,
+  registerWithEmail,
+  loginWithEmail,
+  loginAsDemoAccount,
+  logoutUser,
+  sendPasswordReset,
+  updateUserPassword,
+  subscribeAuthChanges,
+} from '../services/authService';
 
 const BukunaContext = createContext(null);
 
 const STORAGE_KEYS = {
-  USER: 'bukuna_user_v1',
-  USERS_DB: 'bukuna_users_db_v1',
   FAVORITES: 'bukuna_favorites_v1',
   COLLECTIONS: 'bukuna_collections_v1',
   HISTORY: 'bukuna_history_v1',
@@ -92,18 +101,29 @@ function sanitizeQuizResultsList(resultsList, validQuizIds) {
 }
 
 export function BukunaProvider({ children }) {
-  // Default pengguna langsung aktif agar guru/anak dapat langsung mencoba atau keluar/daftar ulang
+  // Saat Supabase aktif, mulai dengan user = null dan authLoading = true sampai sesi Supabase selesai diperiksa.
+  // Akun bawaan "Ibu Guru Rina" dan akun demo statis HANYA aktif di Mode Demo.
+  const [isDemoMode, setIsDemoMode] = useState(() => isAuthInDemoMode());
+  const [authLoading, setAuthLoading] = useState(() => !isAuthInDemoMode());
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+
   const [user, setUser] = useState(() => {
-    const stored = readStorage(STORAGE_KEYS.USER, {
-      id: 'usr-1',
-      nama: 'Ibu Guru Rina',
-      name: 'Ibu Guru Rina',
-      email: 'rina.guru@bukuna.id',
-      avatar: 'orange-cat',
-    });
-    if (stored && !stored.nama && stored.name) stored.nama = stored.name;
-    if (stored && !stored.name && stored.nama) stored.name = stored.nama;
-    return stored;
+    if (isAuthInDemoMode()) {
+      const storedDemo = readStorage('bukuna_demo_user_v1', {
+        id: 'usr-1',
+        nama: 'Ibu Guru Rina',
+        name: 'Ibu Guru Rina',
+        nama_akun: 'Ibu Guru Rina',
+        email: 'rina.guru@bukuna.id',
+        peran: 'guru',
+        avatar: 'orange-cat',
+        isDemo: true,
+      });
+      if (storedDemo && !storedDemo.nama && storedDemo.name) storedDemo.nama = storedDemo.name;
+      if (storedDemo && !storedDemo.name && storedDemo.nama) storedDemo.name = storedDemo.nama;
+      return storedDemo;
+    }
+    return null;
   });
 
   // Daftar cerita buatan pengguna (termasuk draf & terbit)
@@ -142,6 +162,48 @@ export function BukunaProvider({ children }) {
 
   const [toastMessage, setToastMessage] = useState(null);
 
+  const showToast = useCallback((text) => {
+    setToastMessage(text);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === text ? null : prev));
+    }, 3200);
+  }, []);
+
+  // Muat sesi awal dari authService (Supabase atau Mode Demo) dan dengarkan perubahan sesi
+  useEffect(() => {
+    let mounted = true;
+
+    async function initAuthSession() {
+      try {
+        const res = await getCurrentSessionUser();
+        if (!mounted) return;
+        setIsDemoMode(Boolean(res.isDemoMode));
+        setUser(res.user || null);
+      } finally {
+        if (mounted) {
+          setAuthLoading(false);
+        }
+      }
+    }
+
+    initAuthSession();
+
+    const unsubscribeAuth = subscribeAuthChanges((event, nextUser) => {
+      if (!mounted) return;
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+      }
+      setUser(nextUser || null);
+      setIsDemoMode(isAuthInDemoMode());
+      setAuthLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribeAuth();
+    };
+  }, []);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
     const { validStoryIds, validQuizIds } = buildValidIdSets(myStories);
@@ -174,18 +236,6 @@ export function BukunaProvider({ children }) {
 
   useEffect(() => {
     try {
-      if (user) {
-        localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
-      } else {
-        localStorage.removeItem(STORAGE_KEYS.USER);
-      }
-    } catch {
-      // Abaikan jika mode privat penuh
-    }
-  }, [user]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(favorites));
     } catch {
       // Abaikan
@@ -215,13 +265,6 @@ export function BukunaProvider({ children }) {
       // Abaikan
     }
   }, [quizResults]);
-
-  const showToast = useCallback((text) => {
-    setToastMessage(text);
-    setTimeout(() => {
-      setToastMessage((prev) => (prev === text ? null : prev));
-    }, 2800);
-  }, []);
 
   // Gabungkan cerita terbit buatan pengguna dengan cerita bawaan BUKUNA
   const stories = useMemo(() => {
@@ -294,83 +337,84 @@ export function BukunaProvider({ children }) {
   }, []);
 
   const login = useCallback(
-    ({ name, nama, email, password }) => {
-      const identifier = (email || name || nama || '').trim();
-      const usersDb = readStorage(STORAGE_KEYS.USERS_DB, []);
-      const found = usersDb.find(
-        (u) =>
-          (u.name && u.name.toLowerCase() === identifier.toLowerCase()) ||
-          (u.nama && u.nama.toLowerCase() === identifier.toLowerCase()) ||
-          (u.email && u.email.toLowerCase() === identifier.toLowerCase())
-      );
-
-      const displayName =
-        (found && (found.nama || found.name)) ||
-        (nama || name || (identifier.includes('@') ? identifier.split('@')[0] : identifier) || 'Sahabat Bukuna');
-
-      const loggedUser = found
-        ? { ...found, nama: displayName, name: displayName }
-        : {
-            id: `usr-${Date.now()}`,
-            nama: displayName,
-            name: displayName,
-            email: identifier.includes('@')
-              ? identifier
-              : `${displayName.toLowerCase().replace(/\s+/g, '.')}@bukuna.id`,
-            password,
-            avatar: 'orange-cat',
-          };
-
-      setUser(loggedUser);
-      showToast(`Selamat datang kembali, ${loggedUser.nama}!`);
-      return { ok: true, user: loggedUser, ...loggedUser };
+    async ({ email, password }) => {
+      const res = await loginWithEmail({ email, password });
+      setIsDemoMode(Boolean(res.isDemoMode || isAuthInDemoMode()));
+      if (res.ok && res.user) {
+        setUser(res.user);
+        showToast(`Selamat datang kembali, ${res.user.nama}!`);
+      }
+      return res;
     },
     [showToast]
   );
 
   const loginDemo = useCallback(() => {
-    const demoUser = {
-      id: 'usr-demo',
-      nama: 'Bukuna Study',
-      name: 'Bukuna Study',
-      email: 'bukuna@gmail.com',
-      avatar: 'orange-cat',
-    };
-    setUser(demoUser);
+    if (!isAuthInDemoMode()) {
+      return {
+        ok: false,
+        error: 'Akun demo hanya tersedia saat aplikasi berjalan di Mode Demo.',
+      };
+    }
+    const res = loginAsDemoAccount();
+    setIsDemoMode(true);
+    setUser(res.user);
     showToast('Selamat datang di Mode Demo Bukuna Study!');
-    return { ok: true, user: demoUser, ...demoUser };
+    return res;
   }, [showToast]);
 
   const register = useCallback(
-    ({ name, nama, email, password }) => {
-      const cleanName = (nama || name || '').trim() || 'Sahabat Bukuna';
-      const cleanEmail = (email || '').trim();
-      const newUser = {
-        id: `usr-${Date.now()}`,
+    async ({ name, nama, email, password }) => {
+      const cleanName = (nama || name || '').trim() || 'Guru & Orang Tua Bukuna';
+      const res = await registerWithEmail({
         nama: cleanName,
-        name: cleanName,
-        email: cleanEmail,
+        email,
         password,
-        avatar: 'orange-cat',
-      };
-      const usersDb = readStorage(STORAGE_KEYS.USERS_DB, []);
-      const updatedDb = [...usersDb.filter((u) => u.email !== cleanEmail), newUser];
-      try {
-        localStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(updatedDb));
-      } catch {
-        // Abaikan
+      });
+      setIsDemoMode(Boolean(res.isDemoMode || isAuthInDemoMode()));
+      if (res.ok) {
+        if (res.user) {
+          setUser(res.user);
+          showToast(`Halo ${res.user.nama}! Akunmu berhasil dibuat.`);
+        } else if (res.needsEmailConfirmation) {
+          showToast('Pendaftaran berhasil! Silakan cek email Anda untuk konfirmasi.');
+        }
       }
-      setUser(newUser);
-      showToast(`Halo ${newUser.nama}! Akunmu berhasil dibuat.`);
-      return { ok: true, user: newUser, ...newUser };
+      return res;
     },
     [showToast]
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    await logoutUser();
     setUser(null);
+    setIsPasswordRecovery(false);
     showToast('Kamu telah keluar dari akun.');
   }, [showToast]);
+
+  const requestPasswordReset = useCallback(
+    async (email) => {
+      const res = await sendPasswordReset(email);
+      setIsDemoMode(Boolean(res.isDemoMode || isAuthInDemoMode()));
+      if (res.ok) {
+        showToast('Tautan pengaturan ulang kata sandi telah dikirim ke email Anda.');
+      }
+      return res;
+    },
+    [showToast]
+  );
+
+  const confirmNewPassword = useCallback(
+    async (newPassword) => {
+      const res = await updateUserPassword(newPassword);
+      if (res.ok) {
+        setIsPasswordRecovery(false);
+        showToast('Kata sandi berhasil diperbarui!');
+      }
+      return res;
+    },
+    [showToast]
+  );
 
   const toggleFavorite = useCallback(
     (storyId) => {
@@ -516,10 +560,16 @@ export function BukunaProvider({ children }) {
         exportUserStory,
         importUserStory,
         user,
+        authLoading,
+        isDemoMode,
+        isPasswordRecovery,
+        setIsPasswordRecovery,
         login,
         loginDemo,
         register,
         logout,
+        requestPasswordReset,
+        confirmNewPassword,
         favorites,
         toggleFavorite,
         isFavorite,
