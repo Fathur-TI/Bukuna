@@ -610,45 +610,59 @@ export function BukunaProvider({ children }) {
   const hasQuizForStory = useCallback(
     (storyId) => {
       if (!storyId) return false;
-      const userStory = myStories.find((s) => s.id === storyId);
+      const foundStory =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId) ||
+        stories.find((s) => s.id === storyId || s.slug === storyId);
+      const storyQuiz = foundStory && (foundStory.quizzes || foundStory.quiz);
       if (
-        userStory &&
-        userStory.quiz &&
-        Array.isArray(userStory.quiz.questions) &&
-        userStory.quiz.questions.length > 0
+        storyQuiz &&
+        Array.isArray(storyQuiz.questions) &&
+        storyQuiz.questions.length > 0
       ) {
         return true;
       }
-      return Boolean(getQuizByStoryId(storyId));
+      return Boolean(
+        getQuizByStoryId(storyId) ||
+          (foundStory && getQuizByStoryId(foundStory.slug))
+      );
     },
-    [myStories]
+    [allSupabaseStories, catalogStories, stories]
   );
 
   const getQuizForStory = useCallback(
     (storyId) => {
-      const userStory = myStories.find((s) => s.id === storyId);
+      const foundStory =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId) ||
+        stories.find((s) => s.id === storyId || s.slug === storyId);
+      const storyQuiz = foundStory && (foundStory.quizzes || foundStory.quiz);
       if (
-        userStory &&
-        userStory.quiz &&
-        Array.isArray(userStory.quiz.questions) &&
-        userStory.quiz.questions.length > 0
+        foundStory &&
+        storyQuiz &&
+        Array.isArray(storyQuiz.questions) &&
+        storyQuiz.questions.length > 0
       ) {
         return {
-          id: `kuis-${userStory.id}`,
-          storyId: userStory.id,
-          judul: userStory.quiz.judul || `Kuis ${userStory.judul}`,
-          kategori: userStory.kategori || 'Cerita Buatanku',
-          usia: userStory.usia || '4-5 Tahun',
-          cover: userStory.cover || 'cat-magic-forest',
+          id: `kuis-${foundStory.id}`,
+          storyId: foundStory.id,
+          judul: storyQuiz.judul || `Kuis ${foundStory.judul}`,
+          kategori: foundStory.kategori || 'Cerita Bukuna',
+          usia: foundStory.usia || '4-5 Tahun',
+          cover: foundStory.cover || 'cat-magic-forest',
           icon: '📖',
-          deskripsi: `Yuk jawab pertanyaan seru dari cerita "${userStory.judul}"!`,
+          deskripsi: `Yuk jawab pertanyaan seru dari cerita "${foundStory.judul}"!`,
           isGeneral: false,
-          questions: userStory.quiz.questions,
+          questions: storyQuiz.questions,
         };
       }
-      return getQuizByStoryId(storyId) || STORY_QUIZZES[0];
+      return (
+        getQuizByStoryId(storyId) ||
+        (foundStory && getQuizByStoryId(foundStory.slug)) ||
+        STORY_QUIZZES[0]
+      );
     },
-    [myStories]
+    [allSupabaseStories, catalogStories, stories]
   );
 
   const isAdmin = useMemo(() => isUserAdmin(user), [user]);

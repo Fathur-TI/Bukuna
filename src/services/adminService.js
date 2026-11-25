@@ -7,6 +7,7 @@ import {
   isValidUuid,
   generateUuid,
   generateStorySlug,
+  normalizeQuizObject,
 } from './storyStorage';
 
 /**
@@ -101,6 +102,11 @@ export function normalizeDbStoryToBukuna(row) {
           },
         ];
 
+  const normalizedQuiz = normalizeQuizObject(
+    row.quizzes !== undefined && row.quizzes !== null ? row.quizzes : row.quiz,
+    judul
+  );
+
   return {
     id,
     slug,
@@ -125,7 +131,8 @@ export function normalizeDbStoryToBukuna(row) {
     pesanMoral,
     moral_value: pesanMoral,
     pages,
-    quiz: row.quiz || null,
+    quiz: normalizedQuiz,
+    quizzes: normalizedQuiz,
     status: row.status || 'terbit',
     content:
       typeof row.content === 'string' && row.content.trim()
@@ -201,6 +208,11 @@ export function buildDbStoryPayload(input) {
     ];
   }
 
+  const quizzes = normalizeQuizObject(
+    input.quizzes !== undefined && input.quizzes !== null ? input.quizzes : input.quiz,
+    title
+  );
+
   return {
     id,
     slug,
@@ -212,6 +224,7 @@ export function buildDbStoryPayload(input) {
     age_group,
     cover_url,
     pages,
+    quizzes,
   };
 }
 

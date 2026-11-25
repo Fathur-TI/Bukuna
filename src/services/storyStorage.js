@@ -451,12 +451,32 @@ function writeDemoLocalStories(list) {
   }
 }
 
-function normalizeQuizObject(rawQuiz, storyTitle) {
-  if (!rawQuiz || typeof rawQuiz !== 'object') return null;
-  if (!Array.isArray(rawQuiz.questions) || rawQuiz.questions.length === 0) return null;
+export function normalizeQuizObject(rawQuizInput, storyTitle) {
+  let rawQuiz = rawQuizInput;
+  if (typeof rawQuiz === 'string' && rawQuiz.trim()) {
+    try {
+      rawQuiz = JSON.parse(rawQuiz);
+    } catch {
+      return null;
+    }
+  }
+  if (!rawQuiz) return null;
 
-  const judul = sanitizeText(rawQuiz.judul || `Kuis ${storyTitle}`, 80);
-  const questions = rawQuiz.questions
+  // Dukung apabila kolom quizzes di Supabase berupa array langsung ([...questions]) atau objek ({ judul, questions })
+  const rawQuestions = Array.isArray(rawQuiz)
+    ? rawQuiz
+    : typeof rawQuiz === 'object' && Array.isArray(rawQuiz.questions)
+    ? rawQuiz.questions
+    : null;
+
+  if (!rawQuestions || rawQuestions.length === 0) return null;
+
+  const judul = sanitizeText(
+    (typeof rawQuiz === 'object' && !Array.isArray(rawQuiz) && rawQuiz.judul) ||
+      `Kuis ${storyTitle}`,
+    80
+  );
+  const questions = rawQuestions
     .slice(0, 10)
     .map((q, qIdx) => {
       if (!q || typeof q !== 'object') return null;
@@ -641,7 +661,15 @@ export function normalizeStoryObject(input, existing = null) {
     null;
 
   const rawQuizInput =
-    input.quiz !== undefined ? input.quiz : existing ? existing.quiz : null;
+    input.quizzes !== undefined && input.quizzes !== null
+      ? input.quizzes
+      : input.quiz !== undefined && input.quiz !== null
+      ? input.quiz
+      : input.quizzes === null || input.quiz === null
+      ? null
+      : existing
+      ? existing.quizzes || existing.quiz || null
+      : null;
   const quiz = normalizeQuizObject(rawQuizInput, judul);
 
   const dibuat =
@@ -679,6 +707,7 @@ export function normalizeStoryObject(input, existing = null) {
     pesanMoral: sanitizeText(input.pesanMoral || input.moral_value || '', 500),
     pages,
     quiz,
+    quizzes: quiz,
     status,
     dibuat,
     created_at: dibuat,
@@ -723,9 +752,68 @@ async function ensurePublicImageUrl(imageVal, folder = 'stories') {
 }
 
 /**
+ * Memastikan seluruh gambar di dalam soal-soal kuis (`options` / `sequence` / `media`)
+ * diunggah ke bucket `story-images` jika masih berformat lokal (`idb:` atau `data:image/`).
+ */
+async function resolveQuizPublicImages(quizObj, defaultCoverUrl) {
+  if (!quizObj || typeof quizObj !== 'object' || !Array.isArray(quizObj.questions)) {
+    return null;
+  }
+
+  const resolvedQuestions = [];
+  for (let i = 0; i < quizObj.questions.length; i++) {
+    const q = quizObj.questions[i];
+    if (!q || typeof q !== 'object') continue;
+    const nextQ = { ...q };
+
+    if (nextQ.media && typeof nextQ.media === 'object' && nextQ.media.gambar) {
+      const mediaUrl = await ensurePublicImageUrl(nextQ.media.gambar, 'quizzes');
+      nextQ.media = {
+        ...nextQ.media,
+        gambar: mediaUrl || defaultCoverUrl || 'cat-magic-forest',
+      };
+    }
+
+    if (Array.isArray(nextQ.options)) {
+      const nextOpts = [];
+      for (let j = 0; j < nextQ.options.length; j++) {
+        const opt = nextQ.options[j];
+        const optImg = await ensurePublicImageUrl(opt && opt.gambar, 'quizzes');
+        nextOpts.push({
+          ...opt,
+          gambar: optImg || (opt && opt.gambar) || defaultCoverUrl || 'cat-magic-forest',
+        });
+      }
+      nextQ.options = nextOpts;
+    }
+
+    if (Array.isArray(nextQ.sequence)) {
+      const nextSeq = [];
+      for (let j = 0; j < nextQ.sequence.length; j++) {
+        const seq = nextQ.sequence[j];
+        const seqImg = await ensurePublicImageUrl(seq && seq.gambar, 'quizzes');
+        nextSeq.push({
+          ...seq,
+          gambar: seqImg || (seq && seq.gambar) || defaultCoverUrl || 'cat-magic-forest',
+        });
+      }
+      nextQ.sequence = nextSeq;
+    }
+
+    resolvedQuestions.push(nextQ);
+  }
+
+  if (resolvedQuestions.length === 0) return null;
+  return {
+    judul: quizObj.judul || 'Kuis Cerita Bukuna',
+    questions: resolvedQuestions,
+  };
+}
+
+/**
  * Membangun payload baris database untuk tabel `public.stories` Supabase
- * sesuai kolom yang diminta: `user_id`, `author_name`, `title`, `synopsis`,
- * `category`, `age_group`, `cover_url`, dan `pages` (jsonb).
+ * sesuai kolom yang diminta: `id`, `slug`, `user_id`, `author_name`, `title`, `synopsis`,
+ * `category`, `age_group`, `cover_url`, `pages` (jsonb), dan `quizzes` (jsonb).
  */
 async function buildSupabaseStoryRow(normalizedStory) {
   const coverUrl = await ensurePublicImageUrl(
@@ -748,6 +836,11 @@ async function buildSupabaseStoryRow(normalizedStory) {
     });
   }
 
+  const resolvedQuizzes = await resolveQuizPublicImages(
+    normalizedStory.quizzes || normalizedStory.quiz,
+    coverUrl
+  );
+
   const validId = isValidUuid(normalizedStory.id)
     ? normalizedStory.id
     : generateUuid();
@@ -766,6 +859,7 @@ async function buildSupabaseStoryRow(normalizedStory) {
     age_group: normalizedStory.age_group || normalizedStory.usia || '4-5 Tahun',
     cover_url: coverUrl || 'cat-magic-forest',
     pages: resolvedPages,
+    quizzes: resolvedQuizzes,
   };
 }
 
@@ -1117,7 +1211,8 @@ export async function importStoryFromJson(jsonInput, currentUser = null) {
     cover: coverValue,
     coverAlt: sanitizeText(rawStory.coverAlt || '', 200),
     pages: importedPages,
-    quiz: rawStory.quiz || null,
+    quiz: rawStory.quizzes || rawStory.quiz || null,
+    quizzes: rawStory.quizzes || rawStory.quiz || null,
     status: 'terbit',
   });
 

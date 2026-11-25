@@ -39,10 +39,12 @@ export default function ReadStoryPage() {
     toggleFavorite,
     isInCollection,
     toggleCollection,
+    hasQuizForStory,
   } = useBukuna();
 
   const story = getAnyStoryById(id);
   const totalPages = story.pages.length;
+  const hasQuiz = hasQuizForStory ? hasQuizForStory(story.id) : false;
 
   const [pageState, setPageState] = useState({ storyId: story.id, page: 0 });
   const currentPage = pageState.storyId === story.id ? pageState.page : 0;
@@ -222,6 +224,20 @@ export default function ReadStoryPage() {
                       <span>{inCol ? 'Hapus dari Koleksi' : 'Simpan ke Koleksi'}</span>
                     </button>
 
+                    {hasQuiz && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          navigate(`/kuis/${story.id}`);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold hover:bg-[#FFE9B0] hover:text-[#052625] transition-colors cursor-pointer text-left"
+                      >
+                        <span className="text-base leading-none">🎯</span>
+                        <span>Kerjakan Kuis Cerita Ini</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={() => navigate('/beranda')}
@@ -292,9 +308,21 @@ export default function ReadStoryPage() {
                 <span className="sub-chip px-3 py-1 rounded-full bg-[#007A78] text-[#FFE9B0] shrink-0">
                   Halaman {safeIdx + 1} dari {totalPages}
                 </span>
-                <span className="sub-help text-[#052625]/80 truncate">
-                  Geser atau tekan ← →
-                </span>
+                <div className="flex items-center gap-2">
+                  {hasQuiz && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/kuis/${story.id}`)}
+                      className="sub-chip px-3 py-1 rounded-full bg-[#FFE9B0] hover:bg-white text-[#052625] border border-[#E07030] font-heading font-extrabold inline-flex items-center gap-1 shadow-xs transition-all cursor-pointer shrink-0"
+                    >
+                      <span>🎯</span>
+                      <span>Main Kuis</span>
+                    </button>
+                  )}
+                  <span className="sub-help text-[#052625]/80 truncate hidden sm:inline">
+                    Geser atau tekan ← →
+                  </span>
+                </div>
               </div>
 
               {/* Teks Cerita Ramah Anak (Tetap Andika sesuai instruksi) */}

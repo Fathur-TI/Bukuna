@@ -18,25 +18,35 @@ import { STORY_QUIZZES, GENERAL_QUIZZES } from '../data/quizzes';
  */
 export default function QuizHubPage() {
   const { speak } = useSpeech();
-  const { myStories, getBestQuizStars } = useBukuna();
+  const { stories, getBestQuizStars } = useBukuna();
 
-  // Gabungkan kuis cerita pengguna (untuk kesiapan Tahap 3) dengan kuis cerita bawaan
-  const userStoryQuizzes = (myStories || [])
-    .filter((s) => s.quiz && Array.isArray(s.quiz.questions) && s.quiz.questions.length > 0)
-    .map((s) => ({
-      id: `kuis-${s.id}`,
-      storyId: s.id,
-      judul: s.quiz.judul || `Kuis ${s.judul}`,
-      kategori: 'Cerita Buatanku',
-      usia: s.usia || '4-5 Tahun',
-      cover: s.cover || 'cat-magic-forest',
-      icon: '📖',
-      deskripsi: `Mainkan kuis seru dari cerita "${s.judul}"!`,
-      isGeneral: false,
-      questions: s.quiz.questions,
-    }));
+  // Gabungkan kuis dari seluruh cerita di Supabase (dibuat oleh semua penulis) dengan kuis cerita bawaan
+  const supabaseStoryQuizzes = (stories || [])
+    .filter((s) => {
+      const q = s && (s.quizzes || s.quiz);
+      return q && Array.isArray(q.questions) && q.questions.length > 0;
+    })
+    .map((s) => {
+      const q = s.quizzes || s.quiz;
+      return {
+        id: `kuis-${s.id}`,
+        storyId: s.id,
+        judul: q.judul || `Kuis ${s.judul}`,
+        kategori: s.kategori || 'Cerita Bukuna',
+        usia: s.usia || '4-5 Tahun',
+        cover: s.cover || 'cat-magic-forest',
+        icon: '📖',
+        deskripsi: `Mainkan kuis seru dari cerita "${s.judul}"!`,
+        isGeneral: false,
+        questions: q.questions,
+      };
+    });
 
-  const allStoryQuizzes = [...userStoryQuizzes, ...STORY_QUIZZES];
+  const seenQuizStoryIds = new Set(supabaseStoryQuizzes.map((q) => q.storyId));
+  const allStoryQuizzes = [
+    ...supabaseStoryQuizzes,
+    ...STORY_QUIZZES.filter((sq) => !seenQuizStoryIds.has(sq.storyId)),
+  ];
 
   return (
     <div className="bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12">

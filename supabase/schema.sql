@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS public.stories (
   cover_url TEXT NOT NULL DEFAULT '/stories/kucing-hutan/cover.webp',
   moral_value TEXT NOT NULL DEFAULT '',
   pages JSONB NOT NULL DEFAULT '[]'::jsonb,
+  quizzes JSONB NULL,
   quiz JSONB NULL,
   status TEXT NOT NULL DEFAULT 'terbit',
   content TEXT NULL,
@@ -224,6 +225,7 @@ ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS age_category TEXT NOT NULL D
 ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS cover_url TEXT NOT NULL DEFAULT '/stories/kucing-hutan/cover.webp';
 ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS moral_value TEXT NOT NULL DEFAULT '';
 ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS pages JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS quizzes JSONB NULL;
 ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS quiz JSONB NULL;
 ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'terbit';
 ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS content TEXT NULL;

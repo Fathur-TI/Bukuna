@@ -4059,12 +4059,32 @@ function writeDemoLocalStories(list) {
   }
 }
 
-function normalizeQuizObject(rawQuiz, storyTitle) {
-  if (!rawQuiz || typeof rawQuiz !== 'object') return null;
-  if (!Array.isArray(rawQuiz.questions) || rawQuiz.questions.length === 0) return null;
+function normalizeQuizObject(rawQuizInput, storyTitle) {
+  let rawQuiz = rawQuizInput;
+  if (typeof rawQuiz === 'string' && rawQuiz.trim()) {
+    try {
+      rawQuiz = JSON.parse(rawQuiz);
+    } catch {
+      return null;
+    }
+  }
+  if (!rawQuiz) return null;
 
-  const judul = sanitizeText(rawQuiz.judul || `Kuis ${storyTitle}`, 80);
-  const questions = rawQuiz.questions
+  // Dukung apabila kolom quizzes di Supabase berupa array langsung ([...questions]) atau objek ({ judul, questions })
+  const rawQuestions = Array.isArray(rawQuiz)
+    ? rawQuiz
+    : typeof rawQuiz === 'object' && Array.isArray(rawQuiz.questions)
+    ? rawQuiz.questions
+    : null;
+
+  if (!rawQuestions || rawQuestions.length === 0) return null;
+
+  const judul = sanitizeText(
+    (typeof rawQuiz === 'object' && !Array.isArray(rawQuiz) && rawQuiz.judul) ||
+      `Kuis ${storyTitle}`,
+    80
+  );
+  const questions = rawQuestions
     .slice(0, 10)
     .map((q, qIdx) => {
       if (!q || typeof q !== 'object') return null;
@@ -4249,7 +4269,15 @@ function normalizeStoryObject(input, existing = null) {
     null;
 
   const rawQuizInput =
-    input.quiz !== undefined ? input.quiz : existing ? existing.quiz : null;
+    input.quizzes !== undefined && input.quizzes !== null
+      ? input.quizzes
+      : input.quiz !== undefined && input.quiz !== null
+      ? input.quiz
+      : input.quizzes === null || input.quiz === null
+      ? null
+      : existing
+      ? existing.quizzes || existing.quiz || null
+      : null;
   const quiz = normalizeQuizObject(rawQuizInput, judul);
 
   const dibuat =
@@ -4287,6 +4315,7 @@ function normalizeStoryObject(input, existing = null) {
     pesanMoral: sanitizeText(input.pesanMoral || input.moral_value || '', 500),
     pages,
     quiz,
+    quizzes: quiz,
     status,
     dibuat,
     created_at: dibuat,
@@ -4331,9 +4360,68 @@ async function ensurePublicImageUrl(imageVal, folder = 'stories') {
 }
 
 /**
+ * Memastikan seluruh gambar di dalam soal-soal kuis (`options` / `sequence` / `media`)
+ * diunggah ke bucket `story-images` jika masih berformat lokal (`idb:` atau `data:image/`).
+ */
+async function resolveQuizPublicImages(quizObj, defaultCoverUrl) {
+  if (!quizObj || typeof quizObj !== 'object' || !Array.isArray(quizObj.questions)) {
+    return null;
+  }
+
+  const resolvedQuestions = [];
+  for (let i = 0; i < quizObj.questions.length; i++) {
+    const q = quizObj.questions[i];
+    if (!q || typeof q !== 'object') continue;
+    const nextQ = { ...q };
+
+    if (nextQ.media && typeof nextQ.media === 'object' && nextQ.media.gambar) {
+      const mediaUrl = await ensurePublicImageUrl(nextQ.media.gambar, 'quizzes');
+      nextQ.media = {
+        ...nextQ.media,
+        gambar: mediaUrl || defaultCoverUrl || 'cat-magic-forest',
+      };
+    }
+
+    if (Array.isArray(nextQ.options)) {
+      const nextOpts = [];
+      for (let j = 0; j < nextQ.options.length; j++) {
+        const opt = nextQ.options[j];
+        const optImg = await ensurePublicImageUrl(opt && opt.gambar, 'quizzes');
+        nextOpts.push({
+          ...opt,
+          gambar: optImg || (opt && opt.gambar) || defaultCoverUrl || 'cat-magic-forest',
+        });
+      }
+      nextQ.options = nextOpts;
+    }
+
+    if (Array.isArray(nextQ.sequence)) {
+      const nextSeq = [];
+      for (let j = 0; j < nextQ.sequence.length; j++) {
+        const seq = nextQ.sequence[j];
+        const seqImg = await ensurePublicImageUrl(seq && seq.gambar, 'quizzes');
+        nextSeq.push({
+          ...seq,
+          gambar: seqImg || (seq && seq.gambar) || defaultCoverUrl || 'cat-magic-forest',
+        });
+      }
+      nextQ.sequence = nextSeq;
+    }
+
+    resolvedQuestions.push(nextQ);
+  }
+
+  if (resolvedQuestions.length === 0) return null;
+  return {
+    judul: quizObj.judul || 'Kuis Cerita Bukuna',
+    questions: resolvedQuestions,
+  };
+}
+
+/**
  * Membangun payload baris database untuk tabel `public.stories` Supabase
- * sesuai kolom yang diminta: `user_id`, `author_name`, `title`, `synopsis`,
- * `category`, `age_group`, `cover_url`, dan `pages` (jsonb).
+ * sesuai kolom yang diminta: `id`, `slug`, `user_id`, `author_name`, `title`, `synopsis`,
+ * `category`, `age_group`, `cover_url`, `pages` (jsonb), dan `quizzes` (jsonb).
  */
 async function buildSupabaseStoryRow(normalizedStory) {
   const coverUrl = await ensurePublicImageUrl(
@@ -4356,6 +4444,11 @@ async function buildSupabaseStoryRow(normalizedStory) {
     });
   }
 
+  const resolvedQuizzes = await resolveQuizPublicImages(
+    normalizedStory.quizzes || normalizedStory.quiz,
+    coverUrl
+  );
+
   const validId = isValidUuid(normalizedStory.id)
     ? normalizedStory.id
     : generateUuid();
@@ -4374,6 +4467,7 @@ async function buildSupabaseStoryRow(normalizedStory) {
     age_group: normalizedStory.age_group || normalizedStory.usia || '4-5 Tahun',
     cover_url: coverUrl || 'cat-magic-forest',
     pages: resolvedPages,
+    quizzes: resolvedQuizzes,
   };
 }
 
@@ -4725,7 +4819,8 @@ async function importStoryFromJson(jsonInput, currentUser = null) {
     cover: coverValue,
     coverAlt: sanitizeText(rawStory.coverAlt || '', 200),
     pages: importedPages,
-    quiz: rawStory.quiz || null,
+    quiz: rawStory.quizzes || rawStory.quiz || null,
+    quizzes: rawStory.quizzes || rawStory.quiz || null,
     status: 'terbit',
   });
 
@@ -4830,6 +4925,11 @@ function normalizeDbStoryToBukuna(row) {
           },
         ];
 
+  const normalizedQuiz = normalizeQuizObject(
+    row.quizzes !== undefined && row.quizzes !== null ? row.quizzes : row.quiz,
+    judul
+  );
+
   return {
     id,
     slug,
@@ -4854,7 +4954,8 @@ function normalizeDbStoryToBukuna(row) {
     pesanMoral,
     moral_value: pesanMoral,
     pages,
-    quiz: row.quiz || null,
+    quiz: normalizedQuiz,
+    quizzes: normalizedQuiz,
     status: row.status || 'terbit',
     content:
       typeof row.content === 'string' && row.content.trim()
@@ -4930,6 +5031,11 @@ function buildDbStoryPayload(input) {
     ];
   }
 
+  const quizzes = normalizeQuizObject(
+    input.quizzes !== undefined && input.quizzes !== null ? input.quizzes : input.quiz,
+    title
+  );
+
   return {
     id,
     slug,
@@ -4941,6 +5047,7 @@ function buildDbStoryPayload(input) {
     age_group,
     cover_url,
     pages,
+    quizzes,
   };
 }
 
@@ -6646,45 +6753,59 @@ function BukunaProvider({ children }) {
   const hasQuizForStory = useCallback(
     (storyId) => {
       if (!storyId) return false;
-      const userStory = myStories.find((s) => s.id === storyId);
+      const foundStory =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId) ||
+        stories.find((s) => s.id === storyId || s.slug === storyId);
+      const storyQuiz = foundStory && (foundStory.quizzes || foundStory.quiz);
       if (
-        userStory &&
-        userStory.quiz &&
-        Array.isArray(userStory.quiz.questions) &&
-        userStory.quiz.questions.length > 0
+        storyQuiz &&
+        Array.isArray(storyQuiz.questions) &&
+        storyQuiz.questions.length > 0
       ) {
         return true;
       }
-      return Boolean(getQuizByStoryId(storyId));
+      return Boolean(
+        getQuizByStoryId(storyId) ||
+          (foundStory && getQuizByStoryId(foundStory.slug))
+      );
     },
-    [myStories]
+    [allSupabaseStories, catalogStories, stories]
   );
 
   const getQuizForStory = useCallback(
     (storyId) => {
-      const userStory = myStories.find((s) => s.id === storyId);
+      const foundStory =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId) ||
+        stories.find((s) => s.id === storyId || s.slug === storyId);
+      const storyQuiz = foundStory && (foundStory.quizzes || foundStory.quiz);
       if (
-        userStory &&
-        userStory.quiz &&
-        Array.isArray(userStory.quiz.questions) &&
-        userStory.quiz.questions.length > 0
+        foundStory &&
+        storyQuiz &&
+        Array.isArray(storyQuiz.questions) &&
+        storyQuiz.questions.length > 0
       ) {
         return {
-          id: `kuis-${userStory.id}`,
-          storyId: userStory.id,
-          judul: userStory.quiz.judul || `Kuis ${userStory.judul}`,
-          kategori: userStory.kategori || 'Cerita Buatanku',
-          usia: userStory.usia || '4-5 Tahun',
-          cover: userStory.cover || 'cat-magic-forest',
+          id: `kuis-${foundStory.id}`,
+          storyId: foundStory.id,
+          judul: storyQuiz.judul || `Kuis ${foundStory.judul}`,
+          kategori: foundStory.kategori || 'Cerita Bukuna',
+          usia: foundStory.usia || '4-5 Tahun',
+          cover: foundStory.cover || 'cat-magic-forest',
           icon: '📖',
-          deskripsi: `Yuk jawab pertanyaan seru dari cerita "${userStory.judul}"!`,
+          deskripsi: `Yuk jawab pertanyaan seru dari cerita "${foundStory.judul}"!`,
           isGeneral: false,
-          questions: userStory.quiz.questions,
+          questions: storyQuiz.questions,
         };
       }
-      return getQuizByStoryId(storyId) || STORY_QUIZZES[0];
+      return (
+        getQuizByStoryId(storyId) ||
+        (foundStory && getQuizByStoryId(foundStory.slug)) ||
+        STORY_QUIZZES[0]
+      );
     },
-    [myStories]
+    [allSupabaseStories, catalogStories, stories]
   );
 
   const isAdmin = useMemo(() => isUserAdmin(user), [user]);
@@ -11116,25 +11237,35 @@ function EditStory() {
  */
 function QuizHubPage() {
   const { speak } = useSpeech();
-  const { myStories, getBestQuizStars } = useBukuna();
+  const { stories, getBestQuizStars } = useBukuna();
 
-  // Gabungkan kuis cerita pengguna (untuk kesiapan Tahap 3) dengan kuis cerita bawaan
-  const userStoryQuizzes = (myStories || [])
-    .filter((s) => s.quiz && Array.isArray(s.quiz.questions) && s.quiz.questions.length > 0)
-    .map((s) => ({
-      id: `kuis-${s.id}`,
-      storyId: s.id,
-      judul: s.quiz.judul || `Kuis ${s.judul}`,
-      kategori: 'Cerita Buatanku',
-      usia: s.usia || '4-5 Tahun',
-      cover: s.cover || 'cat-magic-forest',
-      icon: '📖',
-      deskripsi: `Mainkan kuis seru dari cerita "${s.judul}"!`,
-      isGeneral: false,
-      questions: s.quiz.questions,
-    }));
+  // Gabungkan kuis dari seluruh cerita di Supabase (dibuat oleh semua penulis) dengan kuis cerita bawaan
+  const supabaseStoryQuizzes = (stories || [])
+    .filter((s) => {
+      const q = s && (s.quizzes || s.quiz);
+      return q && Array.isArray(q.questions) && q.questions.length > 0;
+    })
+    .map((s) => {
+      const q = s.quizzes || s.quiz;
+      return {
+        id: `kuis-${s.id}`,
+        storyId: s.id,
+        judul: q.judul || `Kuis ${s.judul}`,
+        kategori: s.kategori || 'Cerita Bukuna',
+        usia: s.usia || '4-5 Tahun',
+        cover: s.cover || 'cat-magic-forest',
+        icon: '📖',
+        deskripsi: `Mainkan kuis seru dari cerita "${s.judul}"!`,
+        isGeneral: false,
+        questions: q.questions,
+      };
+    });
 
-  const allStoryQuizzes = [...userStoryQuizzes, ...STORY_QUIZZES];
+  const seenQuizStoryIds = new Set(supabaseStoryQuizzes.map((q) => q.storyId));
+  const allStoryQuizzes = [
+    ...supabaseStoryQuizzes,
+    ...STORY_QUIZZES.filter((sq) => !seenQuizStoryIds.has(sq.storyId)),
+  ];
 
   return (
     React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[1160px] mx-auto px-4 sm:px-6 pt-3 pb-10"}, React.createElement("section", {className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA] rounded-[32px] p-5 sm:p-7 mb-7 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4"}, React.createElement(Mascot, {mood: "happy", size: "md", message: "Yuk bermain Kuis Gambar & Suara! Pilih permainan kesukaanmu di bawah ini ya!"}), React.createElement("button", {type: "button", onClick: () =>
@@ -11385,10 +11516,12 @@ function ReadStoryPage() {
     toggleFavorite,
     isInCollection,
     toggleCollection,
+    hasQuizForStory,
   } = useBukuna();
 
   const story = getAnyStoryById(id);
   const totalPages = story.pages.length;
+  const hasQuiz = hasQuizForStory ? hasQuizForStory(story.id) : false;
 
   const [pageState, setPageState] = useState({ storyId: story.id, page: 0 });
   const currentPage = pageState.storyId === story.id ? pageState.page : 0;
@@ -11504,7 +11637,12 @@ function ReadStoryPage() {
                       }, className: "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold hover:bg-[#1FAFAA] hover:text-[#052625] transition-colors cursor-pointer text-left"}, React.createElement(Heart, {className: `w-4 h-4 ${fav ? 'fill-[#FFE9B0] text-[#FFE9B0]' : ''}`}), React.createElement("span", null, fav ? 'Hapus dari Favorit' : 'Tambah ke Favorit')), React.createElement("button", {type: "button", onClick: () => {
                         toggleCollection(story.id);
                         setMenuOpen(false);
-                      }, className: "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold hover:bg-[#1FAFAA] hover:text-[#052625] transition-colors cursor-pointer text-left"}, React.createElement(Bookmark, {className: `w-4 h-4 ${inCol ? 'fill-[#FFE9B0] text-[#FFE9B0]' : ''}`}), React.createElement("span", null, inCol ? 'Hapus dari Koleksi' : 'Simpan ke Koleksi')), React.createElement("button", {type: "button", onClick: () => navigate('/beranda'), className: "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold hover:bg-[#E07030] transition-colors cursor-pointer text-left border-t border-white/10 mt-1 pt-2"}, React.createElement(Home, {className: "w-4 h-4"}), React.createElement("span", null, "Kembali ke Beranda")))
+                      }, className: "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold hover:bg-[#1FAFAA] hover:text-[#052625] transition-colors cursor-pointer text-left"}, React.createElement(Bookmark, {className: `w-4 h-4 ${inCol ? 'fill-[#FFE9B0] text-[#FFE9B0]' : ''}`}), React.createElement("span", null, inCol ? 'Hapus dari Koleksi' : 'Simpan ke Koleksi')), hasQuiz && (
+                      React.createElement("button", {type: "button", onClick: () => {
+                          setMenuOpen(false);
+                          navigate(`/kuis/${story.id}`);
+                        }, className: "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold hover:bg-[#FFE9B0] hover:text-[#052625] transition-colors cursor-pointer text-left"}, React.createElement("span", {className: "text-base leading-none"}, "🎯"), React.createElement("span", null, "Kerjakan Kuis Cerita Ini"))
+                    ), React.createElement("button", {type: "button", onClick: () => navigate('/beranda'), className: "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold hover:bg-[#E07030] transition-colors cursor-pointer text-left border-t border-white/10 mt-1 pt-2"}, React.createElement(Home, {className: "w-4 h-4"}), React.createElement("span", null, "Kembali ke Beranda")))
                 ))), React.createElement(StoryIllustration, {variant: pageData.gambar || story.cover, title: "", alt: pageData.alt || story.judul, pageIndex: safeIdx, showCoverTitle: false, sizeVariant: "lg", fit: "contain-blur", loading: safeIdx === 0 ? 'eager' : 'lazy', className: "w-full h-full"}), React.createElement("div", {"aria-hidden": "true", className: "hidden"}, story.pages.map((p, idx) => {
                 if (idx === safeIdx || !isStaticStoryImagePath(p.gambar)) return null;
                 const isNextPage = idx === safeIdx + 1;
@@ -11517,7 +11655,9 @@ function ReadStoryPage() {
                         ? 'w-7 bg-[#FFE9B0]'
                         : 'w-2.5 bg-white/60 hover:bg-white/90'
                     }`})
-                ))))), React.createElement("div", {className: "lg:col-span-6 flex flex-col justify-between bg-[#1FAFAA] text-[#052625] rounded-[28px] sm:rounded-[32px] p-4 sm:p-8 lg:p-10 shadow-2xl border-4 border-[#FFE9B0]/60 min-h-[270px] sm:min-h-[320px] lg:min-h-[480px]"}, React.createElement("div", null, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-3 sm:mb-4"}, React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#007A78] text-[#FFE9B0] shrink-0"}, "Halaman ", safeIdx + 1, " dari ", totalPages), React.createElement("span", {className: "sub-help text-[#052625]/80 truncate"}, "Geser atau tekan ← →")), React.createElement("p", {className: `font-story font-bold text-[#042423] leading-[1.68] tracking-normal ${
+                ))))), React.createElement("div", {className: "lg:col-span-6 flex flex-col justify-between bg-[#1FAFAA] text-[#052625] rounded-[28px] sm:rounded-[32px] p-4 sm:p-8 lg:p-10 shadow-2xl border-4 border-[#FFE9B0]/60 min-h-[270px] sm:min-h-[320px] lg:min-h-[480px]"}, React.createElement("div", null, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-3 sm:mb-4"}, React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#007A78] text-[#FFE9B0] shrink-0"}, "Halaman ", safeIdx + 1, " dari ", totalPages), React.createElement("div", {className: "flex items-center gap-2"}, hasQuiz && (
+                    React.createElement("button", {type: "button", onClick: () => navigate(`/kuis/${story.id}`), className: "sub-chip px-3 py-1 rounded-full bg-[#FFE9B0] hover:bg-white text-[#052625] border border-[#E07030] font-heading font-extrabold inline-flex items-center gap-1 shadow-xs transition-all cursor-pointer shrink-0"}, React.createElement("span", null, "🎯"), React.createElement("span", null, "Main Kuis"))
+                  ), React.createElement("span", {className: "sub-help text-[#052625]/80 truncate hidden sm:inline"}, "Geser atau tekan ← →"))), React.createElement("p", {className: `font-story font-bold text-[#042423] leading-[1.68] tracking-normal ${
                   largeFont
                     ? 'text-xl sm:text-2xl lg:text-3xl'
                     : 'text-base sm:text-xl lg:text-2xl'
