@@ -16,6 +16,7 @@ import StoryIllustration, {
   getSmallStoryUrl,
   isStaticStoryImagePath,
 } from '../components/StoryIllustration';
+import ParentReviewsSection from '../components/ParentReviewsSection';
 import { useBukuna } from '../context/BukunaContext';
 
 /**
@@ -356,6 +357,9 @@ export default function ReadStoryPage() {
             </div>
           </div>
         </div>
+
+        {/* Bagian Paling Bawah Halaman Baca (Setelah Konten Utama Cerita): Catatan & Ulasan Orang Tua */}
+        <ParentReviewsSection storyId={story.id} storyTitle={story.judul} />
       </div>
     </div>
   );

@@ -11,6 +11,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULE_ORDER = [
     "src/lib/supabaseClient.js",
     "src/services/authService.js",
+    "src/services/commentService.js",
     "src/data/stories.js",
     "src/data/quizzes.js",
     "src/services/storyStorage.js",
@@ -30,6 +31,7 @@ MODULE_ORDER = [
     "src/components/Header.jsx",
     "src/components/Navigation.jsx",
     "src/components/ConfettiEffect.jsx",
+    "src/components/ParentReviewsSection.jsx",
     "src/components/editor/ImageCropper.jsx",
     "src/components/editor/ImageUploader.jsx",
     "src/components/editor/StoryInfoForm.jsx",

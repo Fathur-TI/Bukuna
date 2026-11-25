@@ -2328,6 +2328,408 @@ function subscribeAuthChanges(callback) {
 }
 
 
+// === MODULE: src/services/commentService.js ===
+
+
+/**
+ * Layanan Catatan & Ulasan Orang Tua beserta Balasan (/src/services/commentService.js)
+ * - Mengambil daftar ulasan & balasan dari tabel `story_comments` berdasarkan `story_id`,
+ *   dengan dukungan kolom `parent_id` (`null` untuk ulasan utama, berisi ID ulasan utama untuk balasan),
+ *   dan join ke tabel `profiles` untuk menampilkan nama penulis (`nama_akun`) dan peran (`peran`).
+ * - Menyimpan ulasan utama (`parent_id: null`, `rating: 1..5`) maupun balasan komentar (`parent_id: <id>`).
+ * - Menghapus ulasan atau balasan milik user yang sedang login (`user.id === item.user_id`).
+ * - Mendukung fallback penyimpanan lokal (`localStorage`) jika berjalan di Mode Demo / preview.html.
+ */
+
+const LOCAL_COMMENTS_KEY = 'bukuna_story_comments_v1';
+
+const INITIAL_DEMO_COMMENTS = [
+  {
+    id: 'demo-cmt-1',
+    story_id: 'petualangan-kucing-di-hutan-ajaib',
+    user_id: 'usr-demo-parent-1',
+    parent_id: null,
+    rating: 5,
+    comment:
+      'Cerita Rodri sangat membantu saya mengenalkan nilai keberanian dan sikap suka menolong kepada anak sebelum tidur. Ilustrasinya hangat sekali!',
+    created_at: '2026-11-20T12:30:00.000Z',
+    author_name: 'Bunda Sari (Orang Tua)',
+    author_role: 'guru',
+  },
+  {
+    id: 'demo-cmt-1-reply-1',
+    story_id: 'petualangan-kucing-di-hutan-ajaib',
+    user_id: 'usr-demo-parent-2',
+    parent_id: 'demo-cmt-1',
+    rating: null,
+    comment:
+      'Setuju sekali Bunda! Di kelas kami anak-anak juga paling suka bagian saat Rodri membantu Pipi menyeberangi jembatan.',
+    created_at: '2026-11-20T14:10:00.000Z',
+    author_name: 'Ibu Guru Dina',
+    author_role: 'guru',
+  },
+  {
+    id: 'demo-cmt-2',
+    story_id: 'langit-dan-balon-warna-warni',
+    user_id: 'usr-demo-parent-2',
+    parent_id: null,
+    rating: 5,
+    comment:
+      'Anak-anak di kelas TK sangat antusias menyebutkan warna balon sambil berdiskusi tentang berbagi kebaikan kepada teman yang sedang sedih.',
+    created_at: '2026-11-21T09:15:00.000Z',
+    author_name: 'Ibu Guru Dina',
+    author_role: 'guru',
+  },
+];
+
+function readLocalComments() {
+  try {
+    const raw = localStorage.getItem(LOCAL_COMMENTS_KEY);
+    if (!raw) return INITIAL_DEMO_COMMENTS;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : INITIAL_DEMO_COMMENTS;
+  } catch {
+    return INITIAL_DEMO_COMMENTS;
+  }
+}
+
+function writeLocalComments(list) {
+  try {
+    localStorage.setItem(LOCAL_COMMENTS_KEY, JSON.stringify(list));
+  } catch {
+    // Abaikan jika localStorage penuh
+  }
+}
+
+function normalizeCommentRow(row, fallbackAuthorName = 'Orang Tua / Guru Bukuna') {
+  if (!row) return null;
+
+  let profileObj = row.profiles || null;
+  if (Array.isArray(profileObj)) {
+    profileObj = profileObj[0] || null;
+  }
+
+  const authorName =
+    (profileObj && (profileObj.nama_akun || profileObj.nama || profileObj.name)) ||
+    row.author_name ||
+    fallbackAuthorName;
+
+  const authorRole = (profileObj && profileObj.peran) || row.author_role || 'guru';
+  const parentId =
+    row.parent_id !== undefined && row.parent_id !== null && String(row.parent_id).trim() !== ''
+      ? String(row.parent_id)
+      : null;
+
+  const normalizedRating =
+    row.rating === null || row.rating === undefined
+      ? parentId
+        ? null
+        : 5
+      : Math.max(1, Math.min(5, Number(row.rating) || 5));
+
+  return {
+    id: String(row.id),
+    story_id: String(row.story_id),
+    user_id: String(row.user_id || ''),
+    parent_id: parentId,
+    rating: normalizedRating,
+    comment: String(row.comment || '').trim(),
+    created_at: row.created_at || new Date().toISOString(),
+    author_name: authorName,
+    author_role: authorRole,
+  };
+}
+
+/**
+ * 1. AMBIL DAFTAR ULASAN & BALASAN BERDASARKAN story_id (+ Join profiles)
+ */
+async function fetchStoryComments(storyId) {
+  if (!storyId) return { ok: true, comments: [] };
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    const allLocal = readLocalComments();
+    const filtered = allLocal
+      .filter((c) => c && c.story_id === storyId)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .map((c) => normalizeCommentRow(c))
+      .filter(Boolean);
+    return { ok: true, comments: filtered, isLocal: true };
+  }
+
+  try {
+    // Query utama: join story_comments dengan profiles termasuk parent_id
+    const { data, error } = await supabase
+      .from('story_comments')
+      .select(
+        `
+        id,
+        story_id,
+        user_id,
+        parent_id,
+        rating,
+        comment,
+        created_at,
+        profiles (
+          id,
+          nama_akun,
+          peran
+        )
+      `
+      )
+      .eq('story_id', storyId)
+      .order('created_at', { ascending: false });
+
+    if (!error && Array.isArray(data)) {
+      const normalized = data.map((row) => normalizeCommentRow(row)).filter(Boolean);
+      return { ok: true, comments: normalized, isLocal: false };
+    }
+
+    // Fallback kedua jika relasi foreign key di Supabase disetel ke auth.users (bukan public.profiles langsung):
+    // ambil story_comments lalu gabungkan manual dengan query ke tabel profiles
+    const { data: rawComments, error: rawErr } = await supabase
+      .from('story_comments')
+      .select('id, story_id, user_id, parent_id, rating, comment, created_at')
+      .eq('story_id', storyId)
+      .order('created_at', { ascending: false });
+
+    if (rawErr) {
+      return {
+        ok: false,
+        comments: [],
+        error: 'Belum dapat memuat ulasan dari database. Pastikan tabel story_comments sudah dijalankan di Supabase.',
+      };
+    }
+
+    const rows = Array.isArray(rawComments) ? rawComments : [];
+    const userIds = Array.from(
+      new Set(rows.map((r) => r.user_id).filter(Boolean))
+    );
+
+    const profilesMap = {};
+    if (userIds.length > 0) {
+      const { data: profRows } = await supabase
+        .from('profiles')
+        .select('id, nama_akun, peran')
+        .in('id', userIds);
+
+      if (Array.isArray(profRows)) {
+        profRows.forEach((p) => {
+          if (p && p.id) profilesMap[p.id] = p;
+        });
+      }
+    }
+
+    const merged = rows
+      .map((r) =>
+        normalizeCommentRow({
+          ...r,
+          profiles: profilesMap[r.user_id] || null,
+        })
+      )
+      .filter(Boolean);
+
+    return { ok: true, comments: merged, isLocal: false };
+  } catch {
+    return {
+      ok: false,
+      comments: [],
+      error: 'Terjadi kendala jaringan saat memuat ulasan cerita.',
+    };
+  }
+}
+
+/**
+ * 2. TAMBAH ULASAN UTAMA ATAU BALASAN KOMENTAR (story_id, user_id, parent_id, rating, comment)
+ */
+async function addStoryComment({
+  storyId,
+  user,
+  rating = 5,
+  comment,
+  parentId = null,
+}) {
+  if (!user || !user.id) {
+    return {
+      ok: false,
+      error: 'Silakan masuk ke akun Guru / Orang Tua terlebih dahulu untuk menulis komentar.',
+    };
+  }
+
+  const cleanComment = String(comment || '').trim();
+  if (cleanComment.length < 2) {
+    return {
+      ok: false,
+      error: 'Mohon tulis catatan atau balasan minimal 2 karakter.',
+    };
+  }
+
+  if (cleanComment.length > 1000) {
+    return {
+      ok: false,
+      error: 'Teks komentar maksimal 1.000 karakter.',
+    };
+  }
+
+  const cleanParentId =
+    parentId !== undefined && parentId !== null && String(parentId).trim() !== ''
+      ? String(parentId).trim()
+      : null;
+
+  // Untuk balasan (parent_id !== null), rating bintang tidak diperlukan di UI,
+  // namun kita tetap menyiapkan fallback nilai valid (5) bila kolom rating di DB pengguna masih berstatus NOT NULL.
+  const safeRating =
+    rating === null || rating === undefined
+      ? 5
+      : Math.max(1, Math.min(5, Number(rating) || 5));
+
+  const authorName =
+    user.nama_akun || user.nama || user.name || 'Orang Tua / Guru Bukuna';
+  const authorRole = user.peran || 'guru';
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    const newEntry = {
+      id: `local-cmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      story_id: storyId,
+      user_id: user.id,
+      parent_id: cleanParentId,
+      rating: cleanParentId ? null : safeRating,
+      comment: cleanComment,
+      created_at: new Date().toISOString(),
+      author_name: authorName,
+      author_role: authorRole,
+    };
+    const current = readLocalComments();
+    writeLocalComments([newEntry, ...current]);
+    return {
+      ok: true,
+      comment: normalizeCommentRow(newEntry, authorName),
+    };
+  }
+
+  try {
+    const payload = {
+      story_id: storyId,
+      user_id: user.id,
+      parent_id: cleanParentId,
+      rating: safeRating,
+      comment: cleanComment,
+    };
+
+    const { data, error } = await supabase
+      .from('story_comments')
+      .insert(payload)
+      .select(
+        `
+        id,
+        story_id,
+        user_id,
+        parent_id,
+        rating,
+        comment,
+        created_at,
+        profiles (
+          id,
+          nama_akun,
+          peran
+        )
+      `
+      )
+      .maybeSingle();
+
+    if (!error && data) {
+      return {
+        ok: true,
+        comment: normalizeCommentRow(data, authorName),
+      };
+    }
+
+    // Fallback insert tanpa relational select jika FK join langsung belum terbaca oleh PostgREST cache
+    const { data: fallbackData, error: fallbackErr } = await supabase
+      .from('story_comments')
+      .insert(payload)
+      .select('id, story_id, user_id, parent_id, rating, comment, created_at')
+      .maybeSingle();
+
+    if (fallbackErr) {
+      return {
+        ok: false,
+        error:
+          fallbackErr.message ||
+          'Gagal menyimpan komentar ke Supabase. Pastikan kolom parent_id sudah ada di tabel story_comments.',
+      };
+    }
+
+    return {
+      ok: true,
+      comment: normalizeCommentRow(
+        {
+          ...(fallbackData || payload),
+          id: (fallbackData && fallbackData.id) || `cmt-${Date.now()}`,
+          created_at:
+            (fallbackData && fallbackData.created_at) || new Date().toISOString(),
+          profiles: {
+            id: user.id,
+            nama_akun: authorName,
+            peran: authorRole,
+          },
+        },
+        authorName
+      ),
+    };
+  } catch {
+    return {
+      ok: false,
+      error: 'Tidak dapat mengirim komentar saat ini. Periksa koneksi internet Anda.',
+    };
+  }
+}
+
+/**
+ * 3. HAPUS ULASAN ATAU BALASAN MILIK PENGGUNA SENDIRI (user.id === comment.user_id)
+ */
+async function deleteStoryComment({ commentId, userId }) {
+  if (!commentId || !userId) {
+    return {
+      ok: false,
+      error: 'Anda tidak memiliki akses untuk menghapus komentar ini.',
+    };
+  }
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    const current = readLocalComments();
+    const next = current.filter(
+      (c) =>
+        !(c.id === commentId && String(c.user_id) === String(userId)) &&
+        c.parent_id !== commentId
+    );
+    writeLocalComments(next);
+    return { ok: true };
+  }
+
+  try {
+    const { error } = await supabase
+      .from('story_comments')
+      .delete()
+      .eq('id', commentId)
+      .eq('user_id', userId);
+
+    if (error) {
+      return {
+        ok: false,
+        error: error.message || 'Gagal menghapus komentar dari database.',
+      };
+    }
+
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      error: 'Terjadi kendala jaringan saat menghapus komentar.',
+    };
+  }
+}
+
+
 // === MODULE: src/data/stories.js ===
 // Data cerita anak bawaan untuk platform BUKUNA
 // Berisi 2 cerita bawaan pilihan dengan ilustrasi buku cerita dan pesan moral positif.
@@ -5900,6 +6302,415 @@ function ConfettiEffect() {
 
 
 
+// === MODULE: src/components/ParentReviewsSection.jsx ===
+
+
+
+
+
+
+function formatReviewDate(isoStr) {
+  try {
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return 'Baru saja';
+    return d.toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch {
+    return 'Baru saja';
+  }
+}
+
+/**
+ * Komponen Interaktif "Catatan & Ulasan Orang Tua" (/src/components/ParentReviewsSection.jsx)
+ * - Ditempatkan eksklusif di bagian paling bawah halaman Detail Cerita & Halaman Membaca
+ *   (setelah konten utama cerita selesai) agar tidak mengganggu fokus membaca anak.
+ * - Terintegrasi dengan tabel `story_comments` (termasuk kolom `parent_id` untuk fitur Reply)
+ *   dan join ke `profiles` di Supabase.
+ * - Struktur Data & Tampilan Balasan:
+ *   • Ulasan utama (`parent_id === null`) diurutkan dari yang terbaru (`created_at` descending).
+ *   • Komentar balasan (`parent_id !== null`) ditampilkan menjorok ke dalam (indented) tepat di bawah
+ *     kartu ulasan utama yang dibalas, diurutkan dari balasan terlama ke terbaru (`created_at` ascending).
+ * - Interaksi Balas Komentar:
+ *   • Tombol "Balas" pada setiap kartu ulasan utama (hanya muncul jika user sudah login).
+ *   • Form input balasan ringkas di bawah ulasan tersebut (tanpa rating bintang) disertai pengingat bahasa santun.
+ *   • Tombol "Hapus" pada ulasan utama maupun balasan milik user yang sedang login (`user.id === item.user_id`).
+ */
+function ParentReviewsSection({ storyId, storyTitle = '' }) {
+  const { user, showToast } = useBukuna();
+
+  const [comments, setComments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [rating, setRating] = useState(5);
+  const [hoverRating, setHoverRating] = useState(0);
+  const [commentText, setCommentText] = useState('');
+  const [formError, setFormError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+
+  // State untuk Balas Komentar (Reply)
+  const [activeReplyParentId, setActiveReplyParentId] = useState(null);
+  const [replyText, setReplyText] = useState('');
+  const [replyError, setReplyError] = useState('');
+  const [submittingReply, setSubmittingReply] = useState(false);
+
+  const loadComments = useCallback(async () => {
+    if (!storyId) return;
+    setLoading(true);
+    try {
+      const res = await fetchStoryComments(storyId);
+      if (res && Array.isArray(res.comments)) {
+        setComments(res.comments);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [storyId]);
+
+  useEffect(() => {
+    loadComments();
+    setActiveReplyParentId(null);
+    setReplyText('');
+    setReplyError('');
+  }, [loadComments]);
+
+  // Pisahkan ulasan utama (parent_id === null) dan kelompokkan balasan (parent_id !== null)
+  const { topLevelReviews, repliesByParentMap } = useMemo(() => {
+    const topLevel = [];
+    const replyMap = {};
+
+    (comments || []).forEach((item) => {
+      if (!item) return;
+      if (!item.parent_id) {
+        topLevel.push(item);
+      } else {
+        const pid = String(item.parent_id);
+        if (!replyMap[pid]) {
+          replyMap[pid] = [];
+        }
+        replyMap[pid].push(item);
+      }
+    });
+
+    // Ulasan utama: urutkan dari terbaru ke terlama (created_at descending)
+    topLevel.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    // Balasan komentar: urutkan dari terlama ke terbaru (created_at ascending)
+    Object.keys(replyMap).forEach((pid) => {
+      replyMap[pid].sort(
+        (a, b) => new Date(a.created_at) - new Date(b.created_at)
+      );
+    });
+
+    return {
+      topLevelReviews: topLevel,
+      repliesByParentMap: replyMap,
+    };
+  }, [comments]);
+
+  const handleSubmitReview = async (e) => {
+    e.preventDefault();
+    setFormError('');
+
+    if (!user || !user.id) {
+      setFormError('Silakan masuk terlebih dahulu untuk mengirim ulasan.');
+      return;
+    }
+
+    const trimmed = commentText.trim();
+    if (trimmed.length < 3) {
+      setFormError('Mohon tulis catatan atau kesan membaca minimal 3 karakter.');
+      return;
+    }
+
+    setSubmitting(true);
+
+    // Optimistic entry untuk ulasan utama
+    const authorName =
+      user.nama_akun || user.nama || user.name || 'Orang Tua / Guru Bukuna';
+    const tempId = `temp-${Date.now()}`;
+    const optimisticEntry = {
+      id: tempId,
+      story_id: storyId,
+      user_id: user.id,
+      parent_id: null,
+      rating,
+      comment: trimmed,
+      created_at: new Date().toISOString(),
+      author_name: authorName,
+      author_role: user.peran || 'guru',
+    };
+
+    setComments((prev) => [optimisticEntry, ...prev]);
+    setCommentText('');
+
+    try {
+      const res = await addStoryComment({
+        storyId,
+        user,
+        rating,
+        comment: trimmed,
+        parentId: null,
+      });
+
+      if (!res || !res.ok) {
+        setComments((prev) => prev.filter((item) => item.id !== tempId));
+        setCommentText(trimmed);
+        setFormError(
+          (res && res.error) || 'Gagal mengirim ulasan. Silakan coba kembali.'
+        );
+        return;
+      }
+
+      if (res.comment) {
+        setComments((prev) =>
+          prev.map((item) => (item.id === tempId ? res.comment : item))
+        );
+      }
+      setRating(5);
+      if (showToast) {
+        showToast('Terima kasih! Catatan & ulasan Anda berhasil ditambahkan.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleOpenReplyForm = (parentId) => {
+    if (activeReplyParentId === parentId) {
+      setActiveReplyParentId(null);
+      setReplyText('');
+      setReplyError('');
+    } else {
+      setActiveReplyParentId(parentId);
+      setReplyText('');
+      setReplyError('');
+    }
+  };
+
+  const handleSubmitReply = async (e, parentComment) => {
+    e.preventDefault();
+    setReplyError('');
+
+    if (!user || !user.id) {
+      setReplyError('Silakan masuk terlebih dahulu untuk membalas komentar.');
+      return;
+    }
+
+    if (!parentComment || !parentComment.id) return;
+
+    const trimmed = replyText.trim();
+    if (trimmed.length < 2) {
+      setReplyError('Mohon tulis balasan komentar minimal 2 karakter.');
+      return;
+    }
+
+    setSubmittingReply(true);
+
+    // Optimistic entry untuk balasan komentar
+    const authorName =
+      user.nama_akun || user.nama || user.name || 'Orang Tua / Guru Bukuna';
+    const tempReplyId = `temp-reply-${Date.now()}`;
+    const optimisticReply = {
+      id: tempReplyId,
+      story_id: storyId,
+      user_id: user.id,
+      parent_id: parentComment.id,
+      rating: null,
+      comment: trimmed,
+      created_at: new Date().toISOString(),
+      author_name: authorName,
+      author_role: user.peran || 'guru',
+    };
+
+    setComments((prev) => [...prev, optimisticReply]);
+    setReplyText('');
+    setActiveReplyParentId(null);
+
+    try {
+      const res = await addStoryComment({
+        storyId,
+        user,
+        rating: null,
+        comment: trimmed,
+        parentId: parentComment.id,
+      });
+
+      if (!res || !res.ok) {
+        setComments((prev) => prev.filter((item) => item.id !== tempReplyId));
+        setActiveReplyParentId(parentComment.id);
+        setReplyText(trimmed);
+        setReplyError(
+          (res && res.error) || 'Gagal mengirim balasan komentar. Silakan coba lagi.'
+        );
+        return;
+      }
+
+      if (res.comment) {
+        setComments((prev) =>
+          prev.map((item) => (item.id === tempReplyId ? res.comment : item))
+        );
+      }
+
+      if (showToast) {
+        showToast('Balasan komentar Anda berhasil dikirim!');
+      }
+    } finally {
+      setSubmittingReply(false);
+    }
+  };
+
+  const handleDeleteCommentOrReply = async (targetItem) => {
+    if (!user || !targetItem || String(user.id) !== String(targetItem.user_id)) {
+      return;
+    }
+
+    const targetId = targetItem.id;
+    const isParentReview = !targetItem.parent_id;
+    setDeletingId(targetId);
+
+    // Optimistic removal: hapus item tersebut (dan seluruh balasannya jika yang dihapus adalah ulasan utama)
+    const previousList = comments;
+    setComments((prev) =>
+      prev.filter(
+        (c) =>
+          c.id !== targetId &&
+          !(isParentReview && String(c.parent_id) === String(targetId))
+      )
+    );
+
+    try {
+      const res = await deleteStoryComment({
+        commentId: targetId,
+        userId: user.id,
+      });
+
+      if (!res || !res.ok) {
+        setComments(previousList);
+        if (showToast) {
+          showToast((res && res.error) || 'Gagal menghapus komentar.');
+        }
+        return;
+      }
+
+      if (showToast) {
+        showToast(
+          isParentReview
+            ? 'Catatan ulasan Anda telah dihapus.'
+            : 'Balasan komentar Anda telah dihapus.'
+        );
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  // Rata-rata rating dihitung hanya dari ulasan utama (parent_id === null)
+  const averageRating =
+    topLevelReviews.length > 0
+      ? (
+          topLevelReviews.reduce(
+            (acc, item) => acc + (Number(item.rating) || 5),
+            0
+          ) / topLevelReviews.length
+        ).toFixed(1)
+      : null;
+
+  return (
+    React.createElement("section", {"aria-labelledby": "catatan-ulasan-ortu-heading", className: "w-full mt-8 bg-[#005E5C]/85 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-5 sm:p-8 shadow-2xl text-white"}, React.createElement("div", {className: "flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 border-b border-white/15"}, React.createElement("div", null, React.createElement("span", {className: "sub-chip inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-[#E07030] text-white uppercase tracking-wider mb-2 shadow-sm"}, React.createElement(ShieldCheck, {className: "w-4 h-4"}), React.createElement("span", null, "Ruang Diskusi Pendamping Dewasa")), React.createElement(ColorfulTitle, {as: "h2", id: "catatan-ulasan-ortu-heading", text: "Catatan & Ulasan Orang Tua", className: "font-heading font-extrabold text-2xl sm:text-3xl text-[#FFE9B0]"}), React.createElement("p", {className: "sub-section text-white/90 mt-0.5"}, "Bagikan pesan moral, pengalaman, atau kesan saat membacakan cerita", ' ', storyTitle ? (
+              React.createElement("strong", {className: "text-[#FFE9B0]"}, "&ldquo;", storyTitle, "&rdquo;")
+            ) : (
+              'ini'
+            ), ' ', "bersama anak.")), React.createElement("div", {className: "flex items-center gap-3 self-start sm:self-center bg-[#062D2C]/90 border border-[#1FAFAA]/50 px-4 py-2.5 rounded-2xl shrink-0"}, React.createElement("div", {className: "w-10 h-10 rounded-xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center font-heading font-extrabold text-lg shadow-inner"}, "★"), React.createElement("div", null, React.createElement("div", {className: "font-heading font-extrabold text-lg text-[#FFE9B0] leading-none"}, averageRating ? `${averageRating} / 5.0` : 'Belum Ada Rating'), React.createElement("span", {className: "sub-help text-white/80"}, topLevelReviews.length, " Ulasan Orang Tua &amp; Guru")))), React.createElement("div", {className: "mt-6"}, user ? (
+          React.createElement("form", {onSubmit: handleSubmitReview, noValidate: true, className: "bg-[#062D2C]/85 border-2 border-[#1FAFAA]/50 rounded-[26px] p-4 sm:p-6 space-y-4 shadow-xl"}, React.createElement("div", {className: "flex flex-col sm:flex-row sm:items-center justify-between gap-3"}, React.createElement("div", {className: "flex items-center gap-2.5"}, React.createElement("div", {className: "w-9 h-9 rounded-full bg-[#1FAFAA] text-[#052625] flex items-center justify-center font-heading font-extrabold"}, React.createElement(User, {className: "w-5 h-5"})), React.createElement("div", null, React.createElement("span", {className: "font-heading font-extrabold text-sm sm:text-base text-[#FFE9B0] block leading-tight"}, user.nama_akun || user.nama || user.name || 'Orang Tua / Guru'), React.createElement("span", {className: "text-xs font-bold text-white/75"}, "Menulis sebagai Pendamping (", user.peran || 'guru', ")"))), React.createElement("div", {className: "flex items-center gap-2 bg-[#005E5C] px-3.5 py-2 rounded-full border border-[#1FAFAA]/40 self-start sm:self-auto"}, React.createElement("span", {className: "sub-help text-[#FFE9B0] mr-1"}, "Rating:"), React.createElement("div", {role: "radiogroup", "aria-label": "Pilih rating bintang 1 sampai 5", className: "flex items-center gap-1"}, [1, 2, 3, 4, 5].map((starValue) => {
+                    const active = (hoverRating || rating) >= starValue;
+                    return (
+                      React.createElement("button", {key: starValue, type: "button", onClick: () => setRating(starValue), onMouseEnter: () => setHoverRating(starValue), onMouseLeave: () => setHoverRating(0), "aria-label": `Beri ${starValue} bintang`, "aria-checked": rating === starValue, role: "radio", className: "w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"}, React.createElement(Star, {className: `w-6 h-6 transition-colors ${
+                            active
+                              ? 'fill-[#FFE9B0] text-[#FFE9B0]'
+                              : 'text-white/35'
+                          }`}))
+                    );
+                  })), React.createElement("span", {className: "ml-1 px-2 py-0.5 rounded-full bg-[#E07030] text-white text-xs font-extrabold"}, rating, "/5"))), React.createElement("div", {className: "rounded-2xl bg-[#005E5C]/90 border border-[#FFE9B0]/40 p-3 flex items-start gap-2.5"}, React.createElement(ShieldCheck, {className: "w-5 h-5 text-[#FFE9B0] shrink-0 mt-0.5"}), React.createElement("p", {className: "sub-help text-white/95"}, "Gunakan bahasa yang santun dan positif untuk membagikan pesan moral atau kesan membaca bersama anak.")), formError && (
+              React.createElement("div", {role: "alert", className: "rounded-2xl bg-red-500/20 border-2 border-red-300 px-4 py-2.5 text-xs sm:text-sm font-bold text-white flex items-center gap-2"}, React.createElement(AlertCircle, {className: "w-4 h-4 text-[#FFE9B0] shrink-0"}), React.createElement("span", null, formError))
+            ), React.createElement("div", null, React.createElement("label", {htmlFor: `parent-review-textarea-${storyId}`, className: "sub-form-label block text-[#FFE9B0] mb-1.5 pl-1"}, "Tulis Catatan atau Ulasan Orang Tua"), React.createElement("textarea", {id: `parent-review-textarea-${storyId}`, name: "parentReviewComment", rows: 3, maxLength: 1000, value: commentText, onChange: (e) => setCommentText(e.target.value), placeholder: "Contoh: Anak saya senang sekali dengan tokohnya. Kami berdiskusi tentang pentingnya sikap jujur dan berani menolong teman...", className: "w-full rounded-[22px] bg-white text-[#062D2C] placeholder:text-slate-400 font-bold text-sm sm:text-base p-4 border-4 border-transparent focus:border-[#E07030] focus:outline-none shadow-inner transition-colors"})), React.createElement("div", {className: "flex flex-wrap items-center justify-between gap-2 pt-1"}, React.createElement("span", {className: "sub-help text-white/75 pl-1"}, commentText.length, "/1000 karakter"), React.createElement("button", {type: "submit", disabled: submitting, className: "min-h-[48px] px-6 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-sm sm:text-base shadow-lg inline-flex items-center gap-2 transition-all cursor-pointer"}, React.createElement(Send, {className: "w-4 h-4"}), React.createElement("span", null, submitting ? 'Mengirim Ulasan...' : 'Kirim Ulasan'))))
+        ) : (
+          /* Kartu Ramah Jika User Belum Login */
+          React.createElement("div", {className: "bg-[#062D2C]/85 border-2 border-[#1FAFAA]/50 rounded-[26px] p-5 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left shadow-lg"}, React.createElement("div", {className: "flex flex-col sm:flex-row items-center gap-3.5"}, React.createElement("div", {className: "w-12 h-12 rounded-2xl bg-[#1FAFAA]/25 border-2 border-[#FFE9B0] flex items-center justify-center shrink-0"}, React.createElement(ShieldCheck, {className: "w-6 h-6 text-[#FFE9B0]"})), React.createElement("div", null, React.createElement("h3", {className: "font-heading font-extrabold text-lg text-[#FFE9B0]"}, "Ingin Menulis Catatan &amp; Ulasan Orang Tua?"), React.createElement("p", {className: "sub-help text-white/90 mt-0.5"}, "Silakan masuk ke akun Guru atau Orang Tua terlebih dahulu untuk membagikan rating, kesan membaca, atau membalas diskusi bersama pendamping lain."))), React.createElement(Link, {to: "/masuk", className: "min-h-[46px] px-6 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-sm inline-flex items-center gap-2 shrink-0 shadow-md transition-all"}, React.createElement(LogIn, {className: "w-4 h-4"}), React.createElement("span", null, "Masuk Akun")))
+        )), React.createElement("div", {className: "mt-6"}, loading ? (
+          /* Indikator Loading */
+          React.createElement("div", {role: "status", "aria-live": "polite", className: "py-10 px-4 text-center bg-[#062D2C]/60 rounded-[26px] border border-[#1FAFAA]/30 animate-pulse"}, React.createElement(Sparkles, {className: "w-9 h-9 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("p", {className: "font-heading font-bold text-base text-[#FFE9B0]"}, "Memuat catatan &amp; ulasan orang tua..."))
+        ) : topLevelReviews.length > 0 ? (
+          React.createElement("div", {className: "space-y-4"}, topLevelReviews.map((item) => {
+              const isOwner =
+                Boolean(user && user.id) &&
+                String(user.id) === String(item.user_id);
+              const starCount = Math.max(1, Math.min(5, Number(item.rating) || 5));
+              const replies = repliesByParentMap[String(item.id)] || [];
+              const isReplyingHere = activeReplyParentId === item.id;
+
+              return (
+                React.createElement("div", {key: item.id, className: "space-y-2.5"}, React.createElement("article", {className: "bg-[#007A78]/95 border-2 border-[#1FAFAA]/50 rounded-[24px] p-4 sm:p-5 shadow-md flex flex-col gap-2.5"}, React.createElement("div", {className: "flex flex-wrap items-start justify-between gap-2"}, React.createElement("div", {className: "flex items-center gap-2.5"}, React.createElement("div", {className: "w-10 h-10 rounded-full bg-[#FFE9B0] text-[#052625] font-heading font-extrabold text-base flex items-center justify-center shrink-0 shadow-sm"}, (item.author_name || 'O').charAt(0).toUpperCase()), React.createElement("div", null, React.createElement("div", {className: "flex flex-wrap items-center gap-2"}, React.createElement("h3", {className: "font-heading font-extrabold text-base text-[#FFE9B0]"}, item.author_name || 'Orang Tua / Guru Bukuna'), item.author_role && (
+                              React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#062D2C] text-[#1FAFAA] text-[11px] font-extrabold uppercase tracking-wider"}, item.author_role)
+                            ), isOwner && (
+                              React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#E07030] text-white text-[11px] font-extrabold"}, "Ulasan Saya")
+                            )), React.createElement("span", {className: "text-xs font-semibold text-white/75"}, formatReviewDate(item.created_at)))), React.createElement("div", {className: "flex flex-wrap items-center gap-2"}, React.createElement("div", {role: "img", "aria-label": `Rating ${starCount} dari 5 bintang`, className: "flex items-center gap-0.5 px-3 py-1 rounded-full bg-[#062D2C] border border-[#FFE9B0]/40"}, [1, 2, 3, 4, 5].map((n) => (
+                            React.createElement(Star, {key: n, className: `w-3.5 h-3.5 sm:w-4 sm:h-4 ${
+                                n <= starCount
+                                  ? 'fill-[#FFE9B0] text-[#FFE9B0]'
+                                  : 'text-white/30'
+                              }`})
+                          ))), user && (
+                          React.createElement("button", {type: "button", onClick: () => handleOpenReplyForm(item.id), "aria-expanded": isReplyingHere, className: `min-h-[36px] px-3.5 py-1 rounded-full font-heading font-extrabold text-xs inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                              isReplyingHere
+                                ? 'bg-[#FFE9B0] text-[#052625] shadow-sm'
+                                : 'bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] shadow-sm'
+                            }`}, React.createElement(RotateCcw, {className: "w-3.5 h-3.5"}), React.createElement("span", null, isReplyingHere
+                                ? 'Batal Balas'
+                                : `Balas${replies.length > 0 ? ` (${replies.length})` : ''}`))
+                        ), isOwner && (
+                          React.createElement("button", {type: "button", onClick: () => handleDeleteCommentOrReply(item), disabled: deletingId === item.id, "aria-label": "Hapus ulasan saya", className: "min-h-[36px] px-3 py-1 rounded-full bg-red-500/20 hover:bg-red-500/40 border border-red-300/40 text-red-300 font-bold text-xs inline-flex items-center gap-1 transition-colors cursor-pointer"}, React.createElement(Trash2, {className: "w-3.5 h-3.5"}), React.createElement("span", null, deletingId === item.id ? 'Menghapus...' : 'Hapus'))
+                        ))), React.createElement("p", {className: "sub-body text-white/95 pl-0 sm:pl-12"}, item.comment)), (replies.length > 0 || (user && isReplyingHere)) && (
+                    React.createElement("div", {className: "pl-5 sm:pl-10 space-y-2.5"}, replies.map((reply) => {
+                        const isReplyOwner =
+                          Boolean(user && user.id) &&
+                          String(user.id) === String(reply.user_id);
+
+                        return (
+                          React.createElement("article", {key: reply.id, className: "bg-[#062D2C]/90 border-2 border-[#1FAFAA]/40 rounded-[22px] p-3.5 sm:p-4 shadow-md flex flex-col gap-2"}, React.createElement("div", {className: "flex flex-wrap items-start justify-between gap-2"}, React.createElement("div", {className: "flex items-center gap-2.5"}, React.createElement("div", {className: "w-8 h-8 rounded-full bg-[#1FAFAA] text-[#052625] font-heading font-extrabold text-sm flex items-center justify-center shrink-0 shadow-sm"}, (reply.author_name || 'O').charAt(0).toUpperCase()), React.createElement("div", null, React.createElement("div", {className: "flex flex-wrap items-center gap-1.5"}, React.createElement("h4", {className: "font-heading font-extrabold text-sm sm:text-base text-[#FFE9B0]"}, reply.author_name || 'Orang Tua / Guru Bukuna'), reply.author_role && (
+                                      React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#005E5C] text-[#1FAFAA] text-[11px] font-extrabold uppercase tracking-wider"}, reply.author_role)
+                                    ), React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-white/10 text-[#FFE9B0] text-[11px] font-bold"}, "Balasan"), isReplyOwner && (
+                                      React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#E07030] text-white text-[11px] font-extrabold"}, "Milik Saya")
+                                    )), React.createElement("span", {className: "text-xs font-semibold text-white/75"}, formatReviewDate(reply.created_at)))), isReplyOwner && (
+                                React.createElement("button", {type: "button", onClick: () => handleDeleteCommentOrReply(reply), disabled: deletingId === reply.id, "aria-label": "Hapus balasan saya", className: "min-h-[34px] px-3 py-1 rounded-full bg-red-500/20 hover:bg-red-500/40 border border-red-300/40 text-red-300 font-bold text-xs inline-flex items-center gap-1 transition-colors cursor-pointer"}, React.createElement(Trash2, {className: "w-3.5 h-3.5"}), React.createElement("span", null, deletingId === reply.id ? 'Menghapus...' : 'Hapus'))
+                              )), React.createElement("p", {className: "sub-section text-white/95 pl-0 sm:pl-10"}, reply.comment))
+                        );
+                      }), user && isReplyingHere && (
+                        React.createElement("form", {onSubmit: (e) => handleSubmitReply(e, item), noValidate: true, className: "bg-[#062D2C]/95 border-2 border-[#FFE9B0]/60 rounded-[22px] p-3.5 sm:p-4 space-y-3 shadow-lg"}, React.createElement("div", {className: "flex items-center justify-between gap-2"}, React.createElement("span", {className: "font-heading font-extrabold text-xs sm:text-sm text-[#FFE9B0]"}, "Membalas ulasan ", item.author_name || 'Orang Tua / Guru'), React.createElement("button", {type: "button", onClick: () => {
+                                setActiveReplyParentId(null);
+                                setReplyText('');
+                                setReplyError('');
+                              }, "aria-label": "Tutup form balasan", className: "w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer"}, React.createElement(X, {className: "w-4 h-4"}))), React.createElement("div", {className: "rounded-xl bg-[#005E5C]/90 border border-[#1FAFAA]/40 p-2.5 flex items-start gap-2"}, React.createElement(ShieldCheck, {className: "w-4 h-4 text-[#FFE9B0] shrink-0 mt-0.5"}), React.createElement("p", {className: "sub-help text-white/90"}, "Gunakan bahasa yang santun dan positif saat berdiskusi dengan sesama orang tua atau guru.")), replyError && (
+                            React.createElement("div", {role: "alert", className: "rounded-xl bg-red-500/20 border border-red-300 px-3 py-2 text-xs font-bold text-white flex items-center gap-1.5"}, React.createElement(AlertCircle, {className: "w-4 h-4 text-[#FFE9B0] shrink-0"}), React.createElement("span", null, replyError))
+                          ), React.createElement("div", null, React.createElement("label", {htmlFor: `reply-textarea-${item.id}`, className: "sub-help block text-[#FFE9B0] mb-1 pl-1"}, "Tulis Balasan Anda"), React.createElement("textarea", {id: `reply-textarea-${item.id}`, name: `replyComment_${item.id}`, rows: 2, maxLength: 1000, value: replyText, onChange: (e) => setReplyText(e.target.value), placeholder: `Tulis tanggapan santun untuk ${item.author_name || 'ulasan ini'}...`, className: "w-full rounded-2xl bg-white text-[#062D2C] placeholder:text-slate-400 font-bold text-xs sm:text-sm p-3 border-2 border-transparent focus:border-[#E07030] focus:outline-none shadow-inner transition-colors"})), React.createElement("div", {className: "flex flex-wrap items-center justify-between gap-2"}, React.createElement("span", {className: "sub-help text-white/75 pl-1"}, replyText.length, "/1000 karakter"), React.createElement("div", {className: "flex items-center gap-2"}, React.createElement("button", {type: "button", onClick: () => {
+                                  setActiveReplyParentId(null);
+                                  setReplyText('');
+                                  setReplyError('');
+                                }, className: "min-h-[38px] px-4 py-1.5 rounded-full bg-white/15 hover:bg-white/25 text-white font-bold text-xs cursor-pointer"}, "Batal"), React.createElement("button", {type: "submit", disabled: submittingReply, className: "min-h-[38px] px-5 py-1.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs sm:text-sm shadow-md inline-flex items-center gap-1.5 transition-all cursor-pointer"}, React.createElement(Send, {className: "w-3.5 h-3.5"}), React.createElement("span", null, submittingReply ? 'Mengirim...' : 'Kirim Balasan')))))
+                      ))
+                  ))
+              );
+            }))
+        ) : (
+          /* Empty State Hangat jika belum ada ulasan pada cerita tersebut */
+          React.createElement("div", {className: "py-10 px-6 text-center bg-[#062D2C]/70 rounded-[26px] border-2 border-dashed border-[#1FAFAA]/50"}, React.createElement(Sparkles, {className: "w-10 h-10 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("h3", {className: "font-heading font-extrabold text-lg sm:text-xl text-[#FFE9B0]"}, "Belum Ada Catatan untuk Cerita Ini"), React.createElement("p", {className: "sub-section text-white/85 mt-1 max-w-md mx-auto"}, "Jadilah orang tua atau guru pertama yang membagikan kesan dan pesan moral setelah membacakan cerita ini bersama si kecil!"))
+        )))
+  );
+}
+
+
 // === MODULE: src/components/editor/ImageCropper.jsx ===
 
 
@@ -8049,11 +8860,63 @@ function RegisterPage() {
 
 
 
+const LITERACY_STATS = [
+  {
+    id: 'stat-pisa',
+    badge: 'Data PISA & OECD',
+    metric: 'Peringkat 71',
+    title: 'Tantangan Literasi Membaca',
+    description:
+      'Berdasarkan survei PISA (OECD), kemampuan literasi membaca pelajar Indonesia masih tertinggal di peringkat bawah global, sehingga pembiasaan membaca sejak dini di lingkungan keluarga sangat krusial.',
+    icon: BookOpen,
+    accentClass: 'bg-[#E07030]',
+  },
+  {
+    id: 'stat-perpusnas',
+    badge: 'Kajian Perpusnas RI',
+    metric: '63,90 Poin',
+    title: 'Tingkat Kegemaran Membaca (TGM)',
+    description:
+      'Data Perpustakaan Nasional (Perpusnas) menunjukkan TGM masyarakat Indonesia terus tumbuh ke kategori sedang-tinggi, namun ketersediaan buku cerita anak bergambar yang ramah anak masih perlu diperkuat.',
+    icon: Award,
+    accentClass: 'bg-[#1FAFAA] text-[#052625]',
+  },
+  {
+    id: 'stat-15-menit',
+    badge: 'Riset Perkembangan Anak',
+    metric: '15 Menit/Hari',
+    title: 'Keajaiban Membaca Bersama Orang Tua',
+    description:
+      'Membacakan cerita (read-aloud) minimal 15 menit setiap hari bersama orang tua terbukti memperkaya ribuan kosakata baru serta paparan 1,4 juta kata sebelum masuk sekolah, melatih fokus kognitif, imajinasi kreatif, serta ikatan empati anak.',
+    icon: Clock,
+    accentClass: 'bg-[#E07030]',
+  },
+];
+
+const PARENT_ROLE_PILLARS = [
+  {
+    title: 'Perkembangan Kognitif & Bahasa',
+    text: 'Dialog hangat saat orang tua membacakan cerita merangsang daya ingat, logika sebab-akibat, dan pemerolehan kosakata anak usia dini.',
+    icon: Sparkles,
+  },
+  {
+    title: 'Imajinasi & Daya Kreativitas',
+    text: 'Visualisasi ilustrasi buku cerita membantu anak membangun dunia imajinatif yang sehat dan kemampuan berpikir kreatif.',
+    icon: BookOpen,
+  },
+  {
+    title: 'Empati & Ikatan Emosional',
+    text: 'Mengenal perasaan tokoh cerita dengan pendampingan orang tua atau guru menumbuhkan kepekaan sosial, budi pekerti, dan rasa aman.',
+    icon: Heart,
+  },
+];
+
 /**
  * Halaman 5: Beranda / Homepage (sesuai File 1 Hal 3 kiri & File 2 Hal 1 kanan)
  * - Header: logo kiri, ikon cari & menu titik tiga kanan
  * - Hero: "Cerita Seru Untuk Dunia Kecilnya" + subteks + ilustrasi anak membaca di sofa
  * - Panel "Pilihan Cerita" (#1FAFAA): filter chip Tema + Usia yang bisa digabung + grid kartu oranye (#E07030)
+ * - Seksi Edukasi: "Dasar Pengembangan & Data Minat Baca" (urgensi peran orang tua & kartu statistik Perpusnas/UNESCO/15 Menit)
  */
 function HomePage() {
   const { stories } = useBukuna();
@@ -8115,10 +8978,23 @@ function HomePage() {
               )))
           ) : (
             React.createElement("div", {className: "my-6 bg-[#007A78]/90 rounded-3xl p-8 text-center max-w-md mx-auto border-2 border-white/20"}, React.createElement(Sparkles, {className: "w-12 h-12 text-[#FFE9B0] mx-auto mb-3"}), React.createElement("h3", {className: "font-heading text-xl font-bold text-[#FFE9B0]"}, "Belum ada cerita untuk pilihan ini"), React.createElement("p", {className: "sub-section mt-1 text-white/90"}, "Coba pilih kategori tema atau rentang usia lain untuk melihat cerita seru lainnya."), React.createElement("button", {type: "button", onClick: handleResetFilter, className: "mt-5 min-h-[46px] px-6 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-bold text-sm shadow-md cursor-pointer"}, "Lihat Semua Cerita"))
-          ))), React.createElement(Navigation, null))
+          )), React.createElement("section", {"aria-labelledby": "dasar-pengembangan-heading", className: "px-4 sm:px-6 lg:px-0 pt-7 pb-4"}, React.createElement("div", {className: "bg-[#005E5C]/90 border-2 border-[#1FAFAA]/60 rounded-[34px] p-5 sm:p-8 shadow-2xl"}, React.createElement("div", {className: "text-center max-w-3xl mx-auto"}, React.createElement("span", {className: "sub-chip inline-flex items-center gap-1.5 px-4 py-1 rounded-full bg-[#E07030] text-white uppercase tracking-wider mb-2.5 shadow-sm"}, React.createElement(ShieldCheck, {className: "w-4 h-4"}), React.createElement("span", null, "LITERASI ANAK &amp; PERAN ORANG TUA")), React.createElement(ColorfulTitle, {as: "h2", id: "dasar-pengembangan-heading", text: "Dasar Pengembangan & Data Minat Baca", className: "font-heading font-extrabold text-2xl sm:text-3xl lg:text-4xl text-[#FFE9B0] leading-tight"}), React.createElement("p", {className: "sub-body mt-3 text-white/95"}, "Peran aktif orang tua dalam mendampingi dan membiasakan aktivitas membaca sejak dini merupakan fondasi utama bagi perkembangan kognitif, daya imajinasi, dan kepekaan empati anak. BUKUNA hadir sebagai media literasi digital yang hangat, terarah, dan ramah untuk mendampingi tumbuh kembang semua anak bersama keluarga.")), React.createElement("div", {className: "mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5"}, LITERACY_STATS.map((item) => {
+                const StatIcon = item.icon;
+                return (
+                  React.createElement("article", {key: item.id, className: "bg-[#062D2C]/90 border-2 border-[#1FAFAA]/50 rounded-[26px] p-5 flex flex-col justify-between shadow-xl"}, React.createElement("div", null, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-3"}, React.createElement("span", {className: `sub-chip px-3 py-1 rounded-full font-extrabold shadow-sm ${
+                            item.id === 'stat-perpusnas'
+                              ? 'bg-[#1FAFAA] text-[#052625]'
+                              : 'bg-[#E07030] text-white'
+                          }`}, item.badge), React.createElement("div", {className: "w-10 h-10 rounded-2xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center shrink-0 shadow-inner"}, React.createElement(StatIcon, {className: "w-5 h-5"}))), React.createElement("div", {className: "font-heading font-extrabold text-3xl sm:text-4xl text-[#FFE9B0] tracking-tight"}, item.metric), React.createElement("h3", {className: "mt-1.5 font-heading font-extrabold text-lg text-white leading-snug"}, item.title), React.createElement("p", {className: "sub-help mt-2 text-white/90"}, item.description)))
+                );
+              })), React.createElement("div", {className: "mt-6 bg-[#1FAFAA] text-[#052625] rounded-[28px] p-5 sm:p-6 border-2 border-[#FFE9B0]/70 shadow-lg"}, React.createElement("div", {className: "flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4"}, React.createElement("h3", {className: "font-heading font-extrabold text-lg sm:text-xl text-[#052625]"}, "Mengapa Pendampingan Membaca Bersama Orang Tua Sangat Penting?"), React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#062D2C] text-[#FFE9B0] self-start sm:self-auto"}, "3 Pilar Tumbuh Kembang")), React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4"}, PARENT_ROLE_PILLARS.map((pillar) => {
+                  const PillarIcon = pillar.icon;
+                  return (
+                    React.createElement("div", {key: pillar.title, className: "bg-[#005E5C] text-white rounded-2xl p-4 border border-[#FFE9B0]/40 flex items-start gap-3 shadow-md"}, React.createElement("div", {className: "w-10 h-10 rounded-xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center shrink-0 mt-0.5"}, React.createElement(PillarIcon, {className: "w-5 h-5"})), React.createElement("div", null, React.createElement("h4", {className: "font-heading font-extrabold text-base text-[#FFE9B0] leading-snug"}, pillar.title), React.createElement("p", {className: "sub-help mt-1 text-white/90"}, pillar.text)))
+                  );
+                })))))), React.createElement(Navigation, null))
   );
 }
-
 
 
 // === MODULE: src/pages/CollectionPage.jsx ===
@@ -8131,17 +9007,64 @@ function HomePage() {
 
 
 
+const POLICY_STORAGE_KEY = 'bukuna_reading_policy_agreed_v1';
+
+const READING_POLICIES = [
+  {
+    code: 'a',
+    title: 'Pendampingan Orang Tua & Guru',
+    desc: 'Wajib ada pendampingan orang tua atau guru selama sesi membaca agar terjadi interaksi tanya-jawab hangat yang membantu anak memahami pesan moral cerita.',
+    icon: User,
+  },
+  {
+    code: 'b',
+    title: 'Batasan Waktu Layar (Screen Time) Sehat',
+    desc: 'Anjuran durasi layar untuk anak usia dini adalah maksimal 15–30 menit per sesi membaca dengan jarak pandang mata yang aman dan pencahayaan ruangan cukup.',
+    icon: Clock,
+  },
+  {
+    code: 'c',
+    title: 'Kategori Kesesuaian Usia Pembaca',
+    desc: 'Pilih buku cerita sesuai label kelompok usia (4–5 Tahun untuk kosakata dasar & gambar sederhana; 5–6 Tahun untuk alur imajinatif & sosial-emosional).',
+    icon: Sparkles,
+  },
+  {
+    code: 'd',
+    title: 'Aturan Hak Cipta & Penggunaan Non-Komersial',
+    desc: 'Seluruh koleksi cerita, ilustrasi, dan kuis di BUKUNA dilindungi hak cipta serta ditujukan khusus untuk edukasi keluarga/sekolah (non-komersial).',
+    icon: Award,
+  },
+];
+
 /**
  * Halaman 6: Koleksi / Daftar Cerita (sesuai File 1 Halaman 3 tengah)
- * Menampilkan "Semua Cerita" dengan panel filter Kategori & Kategori Usia (4-5 Tahun, 5-6 Tahun)
- * seperti pada wireframe File 1, ditambah tab untuk melihat Koleksi Tersimpan dan tombol "+ Buat Cerita".
+ * - Menampilkan Banner & Panel Interaktif "Aturan & Panduan Membaca (Policy)" yang terlihat jelas
+ *   dan dapat disetujui oleh orang tua/guru sebelum anak membaca.
+ * - Menampilkan "Semua Cerita" dengan panel filter Kategori & Kategori Usia (4-5 Tahun, 5-6 Tahun)
+ *   seperti pada wireframe File 1, ditambah tab untuk melihat Koleksi Tersimpan dan tombol "+ Buat Cerita".
  */
 function CollectionPage() {
   const navigate = useNavigate();
-  const { stories, myStories, collections } = useBukuna();
+  const { stories, myStories, collections, showToast } = useBukuna();
   const [activeTab, setActiveTab] = useState('semua'); // 'semua' | 'koleksi'
   const [selectedCategory, setSelectedCategory] = useState('Semua Cerita');
   const [selectedAge, setSelectedAge] = useState('Semua');
+
+  // State Persetujuan & Tampilan Detail Aturan Membaca (Policy)
+  const [policyAgreed, setPolicyAgreed] = useState(() => {
+    try {
+      return localStorage.getItem(POLICY_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [showPolicyDetail, setShowPolicyDetail] = useState(() => {
+    try {
+      return localStorage.getItem(POLICY_STORAGE_KEY) !== 'true';
+    } catch {
+      return true;
+    }
+  });
 
   const availableCategories = useMemo(
     () => getAvailableCategories(stories, true),
@@ -8187,10 +9110,27 @@ function CollectionPage() {
     navigate('/cerita/buat');
   };
 
+  const handleAgreePolicy = () => {
+    setPolicyAgreed(true);
+    setShowPolicyDetail(false);
+    try {
+      localStorage.setItem(POLICY_STORAGE_KEY, 'true');
+    } catch {
+      // Abaikan
+    }
+    if (showToast) {
+      showToast('Terima kasih telah menyetujui Aturan & Panduan Membaca BUKUNA!');
+    }
+  };
+
   return (
-    React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-6 pt-4 pb-8"}, React.createElement("div", {className: "flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-6"}, React.createElement("div", null, React.createElement(ColorfulTitle, {as: "h1", text: activeTab === 'semua' ? 'Semua Cerita' : 'Koleksi Tersimpan Saya', className: "font-heading font-extrabold text-2xl sm:text-3xl text-[#FFE9B0]"}), React.createElement("p", {className: "sub-section text-white/90"}, activeTab === 'semua'
+    React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-6 pt-4 pb-8"}, React.createElement("div", {className: "flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-5"}, React.createElement("div", null, React.createElement(ColorfulTitle, {as: "h1", text: activeTab === 'semua' ? 'Semua Cerita' : 'Koleksi Tersimpan Saya', className: "font-heading font-extrabold text-2xl sm:text-3xl text-[#FFE9B0]"}), React.createElement("p", {className: "sub-section text-white/90"}, activeTab === 'semua'
                 ? 'Jelajahi seluruh cerita anak berdasarkan tema dan kelompok usia'
-                : `Daftar cerita yang kamu simpan ke Koleksi (${collections.length} cerita)`)), React.createElement("div", {className: "flex flex-wrap items-center gap-2.5"}, React.createElement("button", {type: "button", onClick: handleCreateStory, className: "min-h-[44px] px-4 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer"}, React.createElement(Plus, {className: "w-4 h-4"}), React.createElement("span", null, "+ Buat Cerita")), React.createElement("button", {type: "button", onClick: () => navigate('/cerita-saya'), className: "min-h-[44px] px-4 py-2 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer"}, React.createElement(Edit3, {className: "w-4 h-4"}), React.createElement("span", null, "Cerita Saya (", myStories.length, ")")), React.createElement("div", {className: "inline-flex rounded-full bg-[#005E5C] p-1 border border-[#1FAFAA]/50"}, React.createElement("button", {type: "button", onClick: () => setActiveTab('semua'), className: `min-h-[40px] px-3.5 py-1.5 rounded-full text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                : `Daftar cerita yang kamu simpan ke Koleksi (${collections.length} cerita)`)), React.createElement("div", {className: "flex flex-wrap items-center gap-2.5"}, React.createElement("button", {type: "button", onClick: () => setShowPolicyDetail((prev) => !prev), "aria-expanded": showPolicyDetail, className: `min-h-[44px] px-4 py-2 rounded-full font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer border-2 ${
+                policyAgreed
+                  ? 'bg-[#005E5C] border-[#1FAFAA] text-[#FFE9B0] hover:bg-[#062D2C]'
+                  : 'bg-[#FFE9B0] border-[#E07030] text-[#052625] hover:bg-white'
+              }`}, React.createElement(ShieldCheck, {className: "w-4 h-4"}), React.createElement("span", null, "Aturan &amp; Panduan Membaca (Policy)")), React.createElement("button", {type: "button", onClick: handleCreateStory, className: "min-h-[44px] px-4 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer"}, React.createElement(Plus, {className: "w-4 h-4"}), React.createElement("span", null, "+ Buat Cerita")), React.createElement("button", {type: "button", onClick: () => navigate('/cerita-saya'), className: "min-h-[44px] px-4 py-2 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer"}, React.createElement(Edit3, {className: "w-4 h-4"}), React.createElement("span", null, "Cerita Saya (", myStories.length, ")")), React.createElement("div", {className: "inline-flex rounded-full bg-[#005E5C] p-1 border border-[#1FAFAA]/50"}, React.createElement("button", {type: "button", onClick: () => setActiveTab('semua'), className: `min-h-[40px] px-3.5 py-1.5 rounded-full text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
                   activeTab === 'semua'
                     ? 'bg-[#E07030] text-white shadow-sm'
                     : 'text-white/85 hover:text-white'
@@ -8198,7 +9138,22 @@ function CollectionPage() {
                   activeTab === 'koleksi'
                     ? 'bg-[#E07030] text-white shadow-sm'
                     : 'text-white/85 hover:text-white'
-                }`}, React.createElement(BookmarkCheck, {className: "w-4 h-4"}), React.createElement("span", null, "Koleksi (", collections.length, ")"))))), React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-12 gap-6 items-start"}, React.createElement("aside", {className: "md:col-span-4 lg:col-span-3 bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-3xl p-4 sm:p-5 shadow-xl"}, React.createElement("div", {className: "flex items-center justify-between mb-3"}, React.createElement("h2", {className: "font-heading font-bold text-lg text-[#FFE9B0]"}, "Kategori Tema"), (selectedCategory !== 'Semua Cerita' || selectedAge !== 'Semua') && (
+                }`}, React.createElement(BookmarkCheck, {className: "w-4 h-4"}), React.createElement("span", null, "Koleksi (", collections.length, ")"))))), React.createElement("section", {"aria-labelledby": "aturan-membaca-heading", className: "mb-6 bg-[#005E5C]/95 border-2 border-[#FFE9B0]/70 rounded-[30px] p-4 sm:p-6 shadow-2xl"}, React.createElement("div", {className: "flex flex-col sm:flex-row sm:items-center justify-between gap-3"}, React.createElement("div", {className: "flex items-start sm:items-center gap-3"}, React.createElement("div", {className: "w-11 h-11 rounded-2xl bg-[#E07030] text-white flex items-center justify-center shrink-0 shadow-md border-2 border-[#FFE9B0]"}, React.createElement(ShieldCheck, {className: "w-6 h-6"})), React.createElement("div", null, React.createElement("div", {className: "flex flex-wrap items-center gap-2"}, React.createElement("h2", {id: "aturan-membaca-heading", className: "font-heading font-extrabold text-lg sm:text-xl text-[#FFE9B0]"}, "Aturan &amp; Panduan Membaca (Policy)"), React.createElement("span", {className: `sub-chip px-2.5 py-0.5 rounded-full text-xs font-extrabold ${
+                      policyAgreed
+                        ? 'bg-[#1FAFAA] text-[#052625]'
+                        : 'bg-[#E07030] text-white'
+                    }`}, policyAgreed ? '✓ Sudah Disetujui Pendamping' : 'Wajib Dibaca Pendamping')), React.createElement("p", {className: "sub-help text-white/90 mt-0.5"}, "Panduan penggunaan koleksi cerita BUKUNA bagi orang tua dan guru sebelum mendampingi anak membaca."))), React.createElement("div", {className: "flex items-center gap-2 self-end sm:self-center shrink-0"}, React.createElement("button", {type: "button", onClick: () => setShowPolicyDetail((prev) => !prev), className: "min-h-[40px] px-4 py-1.5 rounded-full bg-white/15 hover:bg-white/25 text-[#FFE9B0] font-heading font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer"}, showPolicyDetail ? (
+                  React.createElement(React.Fragment, null, React.createElement(X, {className: "w-4 h-4"}), React.createElement("span", null, "Tutup Rincian"))
+                ) : (
+                  React.createElement(React.Fragment, null, React.createElement(Info, {className: "w-4 h-4"}), React.createElement("span", null, "Baca 4 Aturan Lengkap"))
+                )))), showPolicyDetail && (
+            React.createElement("div", {className: "mt-5 pt-4 border-t border-white/15 space-y-4"}, React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4"}, READING_POLICIES.map((item) => {
+                  const PolicyIcon = item.icon;
+                  return (
+                    React.createElement("div", {key: item.code, className: "bg-[#062D2C]/90 border border-[#1FAFAA]/50 rounded-2xl p-4 flex items-start gap-3.5 shadow-md"}, React.createElement("div", {className: "w-10 h-10 rounded-xl bg-[#1FAFAA] text-[#052625] font-heading font-extrabold flex items-center justify-center shrink-0 mt-0.5 shadow-sm"}, React.createElement(PolicyIcon, {className: "w-5 h-5"})), React.createElement("div", null, React.createElement("h3", {className: "font-heading font-extrabold text-sm sm:text-base text-[#FFE9B0]"}, "(", item.code.toUpperCase(), ") ", item.title), React.createElement("p", {className: "sub-help mt-1 text-white/90"}, item.desc)))
+                  );
+                })), React.createElement("div", {className: "bg-[#1FAFAA] text-[#052625] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-2 border-[#FFE9B0]"}, React.createElement("div", {className: "flex items-center gap-2.5"}, React.createElement(CheckCircle2, {className: "w-6 h-6 text-[#052625] shrink-0"}), React.createElement("p", {className: "sub-help font-bold text-[#052625]"}, "Sebagai orang tua/guru, saya telah membaca dan menyetujui aturan pendampingan, batas waktu layar, kesesuaian usia, serta hak cipta non-komersial di atas.")), React.createElement("button", {type: "button", onClick: handleAgreePolicy, className: "min-h-[44px] px-5 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 shadow-md shrink-0 cursor-pointer"}, React.createElement(CheckCircle2, {className: "w-4 h-4"}), React.createElement("span", null, policyAgreed ? 'Sudah Disetujui ✓' : 'Saya Mengerti & Setuju'))))
+          )), React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-12 gap-6 items-start"}, React.createElement("aside", {className: "md:col-span-4 lg:col-span-3 bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-3xl p-4 sm:p-5 shadow-xl"}, React.createElement("div", {className: "flex items-center justify-between mb-3"}, React.createElement("h2", {className: "font-heading font-bold text-lg text-[#FFE9B0]"}, "Kategori Tema"), (selectedCategory !== 'Semua Cerita' || selectedAge !== 'Semua') && (
                 React.createElement("button", {type: "button", onClick: handleReset, className: "text-xs font-bold text-[#FFE9B0] hover:underline flex items-center gap-1 cursor-pointer min-h-[36px]"}, React.createElement(RotateCcw, {className: "w-3.5 h-3.5"}), "Reset")
               )), React.createElement("div", {className: "flex flex-col gap-2"}, availableCategories.map((category) => {
                 const isSelected = selectedCategory === category;
@@ -9157,6 +10112,7 @@ function QuizPlayPage() {
 
 
 
+
 /**
  * Halaman 9: Detail Cerita (sesuai File 1 Hal 4 tengah & File 2 Hal 2 kanan)
  * - Tombol kembali (<)
@@ -9234,12 +10190,13 @@ function StoryDetailPage() {
                 React.createElement(Link, {to: `/kuis/${story.id}`, className: "w-full sm:w-auto min-h-[56px] py-3.5 px-6 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] border-2 border-[#FFE9B0] font-heading font-extrabold text-lg shadow-lg transition-all flex items-center justify-center gap-2"}, React.createElement("span", {className: "text-xl leading-none"}, "🎯"), React.createElement("span", null, "Main Kuis"))
               ), isUserStory && (
                 React.createElement("button", {type: "button", onClick: handleExportBackup, className: "w-full sm:w-auto min-h-[56px] px-5 py-3 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] font-heading font-extrabold text-sm inline-flex items-center justify-center gap-2 shadow-md transition-colors cursor-pointer shrink-0"}, React.createElement(Download, {className: "w-5 h-5"}), React.createElement("span", null, "Ekspor (.json)"))
-              ))))), React.createElement(Navigation, null))
+              )))), React.createElement(ParentReviewsSection, {storyId: story.id, storyTitle: story.judul})), React.createElement(Navigation, null))
   );
 }
 
 
 // === MODULE: src/pages/ReadStoryPage.jsx ===
+
 
 
 
@@ -9413,7 +10370,7 @@ function ReadStoryPage() {
                   React.createElement(React.Fragment, null, React.createElement("span", null, "Selesai"), React.createElement(CheckCircle, {className: "w-4 h-4 sm:w-5 sm:h-5 shrink-0"}))
                 ) : (
                   React.createElement(React.Fragment, null, React.createElement("span", null, "Selanjutnya"), React.createElement(ChevronRight, {className: "w-4 h-4 sm:w-5 sm:h-5 shrink-0"}))
-                )))))))
+                ))))), React.createElement(ParentReviewsSection, {storyId: story.id, storyTitle: story.judul})))
   );
 }
 

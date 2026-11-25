@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import StoryIllustration from '../components/StoryIllustration';
 import Navigation from '../components/Navigation';
+import ParentReviewsSection from '../components/ParentReviewsSection';
 import { useBukuna } from '../context/BukunaContext';
 
 /**
@@ -217,6 +218,9 @@ export default function StoryDetailPage() {
             </div>
           </div>
         </div>
+
+        {/* Bagian Bawah: Catatan & Ulasan Orang Tua (Terintegrasi Supabase story_comments & profiles) */}
+        <ParentReviewsSection storyId={story.id} storyTitle={story.judul} />
       </main>
 
       <Navigation />

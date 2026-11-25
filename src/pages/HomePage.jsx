@@ -1,5 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Sparkles, RotateCcw } from 'lucide-react';
+import {
+  Sparkles,
+  RotateCcw,
+  BookOpen,
+  Clock,
+  Heart,
+  Award,
+  ShieldCheck,
+} from 'lucide-react';
 import Header from '../components/Header';
 import Navigation from '../components/Navigation';
 import HeroIllustration from '../components/HeroIllustration';
@@ -8,11 +16,63 @@ import ColorfulTitle from '../components/ColorfulTitle';
 import { useBukuna } from '../context/BukunaContext';
 import { getAvailableCategories, AGE_GROUPS } from '../data/stories';
 
+const LITERACY_STATS = [
+  {
+    id: 'stat-pisa',
+    badge: 'Data PISA & OECD',
+    metric: 'Peringkat 71',
+    title: 'Tantangan Literasi Membaca',
+    description:
+      'Berdasarkan survei PISA (OECD), kemampuan literasi membaca pelajar Indonesia masih tertinggal di peringkat bawah global, sehingga pembiasaan membaca sejak dini di lingkungan keluarga sangat krusial.',
+    icon: BookOpen,
+    accentClass: 'bg-[#E07030]',
+  },
+  {
+    id: 'stat-perpusnas',
+    badge: 'Kajian Perpusnas RI',
+    metric: '63,90 Poin',
+    title: 'Tingkat Kegemaran Membaca (TGM)',
+    description:
+      'Data Perpustakaan Nasional (Perpusnas) menunjukkan TGM masyarakat Indonesia terus tumbuh ke kategori sedang-tinggi, namun ketersediaan buku cerita anak bergambar yang ramah anak masih perlu diperkuat.',
+    icon: Award,
+    accentClass: 'bg-[#1FAFAA] text-[#052625]',
+  },
+  {
+    id: 'stat-15-menit',
+    badge: 'Riset Perkembangan Anak',
+    metric: '15 Menit/Hari',
+    title: 'Keajaiban Membaca Bersama Orang Tua',
+    description:
+      'Membacakan cerita (read-aloud) minimal 15 menit setiap hari bersama orang tua terbukti memperkaya ribuan kosakata baru serta paparan 1,4 juta kata sebelum masuk sekolah, melatih fokus kognitif, imajinasi kreatif, serta ikatan empati anak.',
+    icon: Clock,
+    accentClass: 'bg-[#E07030]',
+  },
+];
+
+const PARENT_ROLE_PILLARS = [
+  {
+    title: 'Perkembangan Kognitif & Bahasa',
+    text: 'Dialog hangat saat orang tua membacakan cerita merangsang daya ingat, logika sebab-akibat, dan pemerolehan kosakata anak usia dini.',
+    icon: Sparkles,
+  },
+  {
+    title: 'Imajinasi & Daya Kreativitas',
+    text: 'Visualisasi ilustrasi buku cerita membantu anak membangun dunia imajinatif yang sehat dan kemampuan berpikir kreatif.',
+    icon: BookOpen,
+  },
+  {
+    title: 'Empati & Ikatan Emosional',
+    text: 'Mengenal perasaan tokoh cerita dengan pendampingan orang tua atau guru menumbuhkan kepekaan sosial, budi pekerti, dan rasa aman.',
+    icon: Heart,
+  },
+];
+
 /**
  * Halaman 5: Beranda / Homepage (sesuai File 1 Hal 3 kiri & File 2 Hal 1 kanan)
  * - Header: logo kiri, ikon cari & menu titik tiga kanan
  * - Hero: "Cerita Seru Untuk Dunia Kecilnya" + subteks + ilustrasi anak membaca di sofa
  * - Panel "Pilihan Cerita" (#1FAFAA): filter chip Tema + Usia yang bisa digabung + grid kartu oranye (#E07030)
+ * - Seksi Edukasi: "Dasar Pengembangan & Data Minat Baca" (urgensi peran orang tua & kartu statistik Perpusnas/UNESCO/15 Menit)
  */
 export default function HomePage() {
   const { stories } = useBukuna();
@@ -191,10 +251,114 @@ export default function HomePage() {
             </div>
           )}
         </section>
+
+        {/* SEKSI EDUKASI: "DASAR PENGEMBANGAN & DATA MINAT BACA" */}
+        <section
+          aria-labelledby="dasar-pengembangan-heading"
+          className="px-4 sm:px-6 lg:px-0 pt-7 pb-4"
+        >
+          <div className="bg-[#005E5C]/90 border-2 border-[#1FAFAA]/60 rounded-[34px] p-5 sm:p-8 shadow-2xl">
+            {/* Header Seksi Edukasi */}
+            <div className="text-center max-w-3xl mx-auto">
+              <span className="sub-chip inline-flex items-center gap-1.5 px-4 py-1 rounded-full bg-[#E07030] text-white uppercase tracking-wider mb-2.5 shadow-sm">
+                <ShieldCheck className="w-4 h-4" />
+                <span>LITERASI ANAK &amp; PERAN ORANG TUA</span>
+              </span>
+
+              <ColorfulTitle
+                as="h2"
+                id="dasar-pengembangan-heading"
+                text="Dasar Pengembangan & Data Minat Baca"
+                className="font-heading font-extrabold text-2xl sm:text-3xl lg:text-4xl text-[#FFE9B0] leading-tight"
+              />
+
+              <p className="sub-body mt-3 text-white/95">
+                Peran aktif orang tua dalam mendampingi dan membiasakan aktivitas membaca sejak dini merupakan fondasi utama bagi perkembangan kognitif, daya imajinasi, dan kepekaan empati anak. BUKUNA hadir sebagai media literasi digital yang hangat, terarah, dan ramah untuk mendampingi tumbuh kembang semua anak bersama keluarga.
+              </p>
+            </div>
+
+            {/* 3 Kartu Statistik / Data Pendukung (UNESCO, Perpusnas, 15 Menit/Hari) */}
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5">
+              {LITERACY_STATS.map((item) => {
+                const StatIcon = item.icon;
+                return (
+                  <article
+                    key={item.id}
+                    className="bg-[#062D2C]/90 border-2 border-[#1FAFAA]/50 rounded-[26px] p-5 flex flex-col justify-between shadow-xl"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <span
+                          className={`sub-chip px-3 py-1 rounded-full font-extrabold shadow-sm ${
+                            item.id === 'stat-perpusnas'
+                              ? 'bg-[#1FAFAA] text-[#052625]'
+                              : 'bg-[#E07030] text-white'
+                          }`}
+                        >
+                          {item.badge}
+                        </span>
+                        <div className="w-10 h-10 rounded-2xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center shrink-0 shadow-inner">
+                          <StatIcon className="w-5 h-5" />
+                        </div>
+                      </div>
+
+                      <div className="font-heading font-extrabold text-3xl sm:text-4xl text-[#FFE9B0] tracking-tight">
+                        {item.metric}
+                      </div>
+
+                      <h3 className="mt-1.5 font-heading font-extrabold text-lg text-white leading-snug">
+                        {item.title}
+                      </h3>
+
+                      <p className="sub-help mt-2 text-white/90">
+                        {item.description}
+                      </p>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
+            {/* Panel Pilar Urgensi Peran Orang Tua */}
+            <div className="mt-6 bg-[#1FAFAA] text-[#052625] rounded-[28px] p-5 sm:p-6 border-2 border-[#FFE9B0]/70 shadow-lg">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                <h3 className="font-heading font-extrabold text-lg sm:text-xl text-[#052625]">
+                  Mengapa Pendampingan Membaca Bersama Orang Tua Sangat Penting?
+                </h3>
+                <span className="sub-chip px-3 py-1 rounded-full bg-[#062D2C] text-[#FFE9B0] self-start sm:self-auto">
+                  3 Pilar Tumbuh Kembang
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4">
+                {PARENT_ROLE_PILLARS.map((pillar) => {
+                  const PillarIcon = pillar.icon;
+                  return (
+                    <div
+                      key={pillar.title}
+                      className="bg-[#005E5C] text-white rounded-2xl p-4 border border-[#FFE9B0]/40 flex items-start gap-3 shadow-md"
+                    >
+                      <div className="w-10 h-10 rounded-xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center shrink-0 mt-0.5">
+                        <PillarIcon className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="font-heading font-extrabold text-base text-[#FFE9B0] leading-snug">
+                          {pillar.title}
+                        </h4>
+                        <p className="sub-help mt-1 text-white/90">
+                          {pillar.text}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
 
       <Navigation />
     </div>
   );
 }
-
