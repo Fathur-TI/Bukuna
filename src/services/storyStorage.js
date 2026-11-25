@@ -78,6 +78,27 @@ export function extractAgeGroup(usiaStr) {
   return migrated.startsWith('5-6') ? '5-6' : '4-5';
 }
 
+export function isValidUuid(val) {
+  if (!val || typeof val !== 'string') return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    val.trim()
+  );
+}
+
+export function generateUuid() {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+  ) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function isIndexedDbImageId(val) {
   return typeof val === 'string' && val.startsWith('idb:');
 }
@@ -333,20 +354,69 @@ export async function getAllIndexedDbImageKeys() {
   }
 }
 
+function stripBase64FromStory(story) {
+  if (!story || typeof story !== 'object') return story;
+  const cleanCover =
+    typeof story.cover === 'string' && story.cover.startsWith('data:image/')
+      ? 'cat-magic-forest'
+      : story.cover;
+  const cleanCoverUrl =
+    typeof story.cover_url === 'string' && story.cover_url.startsWith('data:image/')
+      ? 'cat-magic-forest'
+      : story.cover_url;
+  const cleanPages = Array.isArray(story.pages)
+    ? story.pages.map((p) => {
+        if (!p || typeof p !== 'object') return p;
+        const g =
+          typeof p.gambar === 'string' && p.gambar.startsWith('data:image/')
+            ? ''
+            : p.gambar;
+        const imgUrl =
+          typeof p.image_url === 'string' && p.image_url.startsWith('data:image/')
+            ? ''
+            : p.image_url;
+        const { gambarDataUrl: _a, ...restPage } = p;
+        return { ...restPage, gambar: g, image_url: imgUrl };
+      })
+    : [];
+  const { coverDataUrl: _c, imagesDataUrlMap: _m, ...restStory } = story;
+  return {
+    ...restStory,
+    cover: cleanCover,
+    cover_url: cleanCoverUrl,
+    pages: cleanPages,
+  };
+}
+
 function readDemoLocalStories() {
   try {
     const raw = localStorage.getItem(LS_MY_STORIES_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed)
+      ? parsed.map((s) => stripBase64FromStory(s))
+      : [];
   } catch {
     return [];
   }
 }
 
 function writeDemoLocalStories(list) {
+  // Jangan pernah menyimpan ke localStorage jika Supabase aktif,
+  // dan selalu bersihkan data Base64 agar tidak pernah memicu QuotaExceededError
+  if (!isAuthInDemoMode() && isSupabaseConfigured && supabase) {
+    try {
+      localStorage.removeItem(LS_MY_STORIES_KEY);
+    } catch {
+      // Abaikan
+    }
+    return;
+  }
   try {
-    localStorage.setItem(LS_MY_STORIES_KEY, JSON.stringify(list));
+    const stripped = Array.isArray(list)
+      ? list.map((s) => stripBase64FromStory(s))
+      : [];
+    localStorage.setItem(LS_MY_STORIES_KEY, JSON.stringify(stripped));
   } catch {
     // Abaikan
   }
@@ -427,11 +497,14 @@ function normalizeQuizObject(rawQuiz, storyTitle) {
  */
 export function normalizeStoryObject(input, existing = null) {
   const now = new Date().toISOString();
-  const id =
+  const candidateId =
     (existing && existing.id) ||
-    (input && (input.id || input.slug)
-      ? String(input.id || input.slug).trim()
-      : `cerita-ku-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+    (input && input.id ? String(input.id).trim() : '');
+  const id = isValidUuid(candidateId)
+    ? candidateId
+    : candidateId && !candidateId.startsWith('cerita-ku-')
+    ? candidateId
+    : generateUuid();
 
   const judul = sanitizeText(
     input.title || input.judul || (existing && (existing.judul || existing.title)) || 'Cerita Tanpa Judul',
@@ -641,9 +714,13 @@ async function buildSupabaseStoryRow(normalizedStory) {
     });
   }
 
+  const validId = isValidUuid(normalizedStory.id)
+    ? normalizedStory.id
+    : generateUuid();
+
   return {
-    id: normalizedStory.id,
-    user_id: normalizedStory.user_id || null,
+    id: validId,
+    user_id: isValidUuid(normalizedStory.user_id) ? normalizedStory.user_id : null,
     author_name: normalizedStory.author_name || normalizedStory.penulis || 'Guru & Orang Tua Bukuna',
     title: normalizedStory.title || normalizedStory.judul,
     synopsis: normalizedStory.synopsis || normalizedStory.sinopsis || '',
@@ -790,11 +867,12 @@ export async function createStory(storyData) {
  */
 export async function updateStory(id, storyData) {
   const existing = getStoryById(id);
-  const updated = normalizeStoryObject({ ...storyData, id }, existing);
+  const safeId = isValidUuid(id) ? id : (existing && isValidUuid(existing.id) ? existing.id : generateUuid());
+  const updated = normalizeStoryObject({ ...storyData, id: safeId }, existing);
 
   if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
     const list = readDemoLocalStories();
-    const idx = list.findIndex((s) => s.id === id);
+    const idx = list.findIndex((s) => s.id === id || s.id === safeId);
     if (idx !== -1) {
       list[idx] = updated;
     } else {
@@ -811,7 +889,7 @@ export async function updateStory(id, storyData) {
 
   cachedStoriesList = [
     optimistic,
-    ...cachedStoriesList.filter((s) => s.id !== id && s.id !== optimistic.id),
+    ...cachedStoriesList.filter((s) => s.id !== id && s.id !== safeId && s.id !== optimistic.id),
   ];
   notifyStoryStorageChanged();
 
@@ -833,7 +911,7 @@ export async function updateStory(id, storyData) {
   });
   cachedStoriesList = [
     saved,
-    ...cachedStoriesList.filter((s) => s.id !== id && s.id !== saved.id),
+    ...cachedStoriesList.filter((s) => s.id !== id && s.id !== safeId && s.id !== saved.id),
   ];
   notifyStoryStorageChanged();
   return saved;

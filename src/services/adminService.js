@@ -1,7 +1,12 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { isAuthInDemoMode } from './authService';
 import { initialStories } from '../data/stories';
-import { extractAgeGroup, migrateAgeLabel } from './storyStorage';
+import {
+  extractAgeGroup,
+  migrateAgeLabel,
+  isValidUuid,
+  generateUuid,
+} from './storyStorage';
 
 /**
  * Layanan Dashboard Admin & Katalog Cerita Supabase (/src/services/adminService.js)
@@ -144,7 +149,8 @@ export function normalizeDbStoryToBukuna(row) {
 export function buildDbStoryPayload(input) {
   const title = String(input.title || input.judul || 'Cerita Baru Bukuna').trim();
   const slug = String(input.slug || input.id || slugifyStoryTitle(title)).trim();
-  const id = String(input.id || slug).trim();
+  const rawId = String(input.id || '').trim();
+  const id = isValidUuid(rawId) ? rawId : generateUuid();
   const synopsis = String(input.synopsis || input.sinopsis || '').trim();
   const category = String(input.category || input.kategori || 'Petualangan').trim();
   const age_group = migrateAgeLabel(
@@ -156,7 +162,8 @@ export function buildDbStoryPayload(input) {
   const author_name = String(
     input.author_name || input.penulis || 'Guru & Orang Tua Bukuna'
   ).trim();
-  const user_id = input.user_id || input.userId || null;
+  const rawUserId = input.user_id || input.userId || null;
+  const user_id = isValidUuid(rawUserId) ? rawUserId : null;
 
   let pages = [];
   if (Array.isArray(input.pages) && input.pages.length > 0) {
@@ -380,13 +387,7 @@ export async function upsertCatalogStory(storyInput, isEdit = false) {
 
     const { data, error } = await supabase
       .from('stories')
-      .upsert(
-        {
-          ...payload,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'id' }
-      )
+      .upsert(payload, { onConflict: 'id' })
       .select('*')
       .maybeSingle();
 

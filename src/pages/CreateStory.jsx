@@ -16,12 +16,12 @@ import PageEditor from '../components/editor/PageEditor';
 import StoryPreview from '../components/editor/StoryPreview';
 import useAutosave from '../hooks/useAutosave';
 import { useBukuna } from '../context/BukunaContext';
-import { getStoryById } from '../services/storyStorage';
+import { getStoryById, generateUuid, isValidUuid } from '../services/storyStorage';
 
 const WORKING_DRAFT_KEY = 'bukuna_working_draft_id_v1';
 
 function createInitialStoryState(authorName) {
-  const nowId = `cerita-ku-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const nowId = generateUuid();
   return {
     id: nowId,
     judul: '',
@@ -68,11 +68,13 @@ export default function CreateStory({ editStoryId = null }) {
     }
     try {
       const savedDraftId = sessionStorage.getItem(WORKING_DRAFT_KEY);
-      if (savedDraftId) {
+      if (savedDraftId && isValidUuid(savedDraftId)) {
         const draft = getStoryById(savedDraftId);
         if (draft && draft.status === 'draf') {
           return draft;
         }
+      } else if (savedDraftId) {
+        sessionStorage.removeItem(WORKING_DRAFT_KEY);
       }
     } catch {
       // Abaikan
@@ -102,8 +104,10 @@ export default function CreateStory({ editStoryId = null }) {
   const persistStory = useCallback(
     async (dataToSave, options = { silent: false, forceStatus: null }) => {
       const nextStatus = options.forceStatus || dataToSave.status || 'draf';
+      const validId = isValidUuid(dataToSave.id) ? dataToSave.id : generateUuid();
       const payload = {
         ...dataToSave,
+        id: validId,
         judul: (dataToSave.judul || '').trim() || 'Draf Cerita Baru',
         status: nextStatus,
         penulis: dataToSave.penulis || (user && user.name) || 'Guru & Orang Tua Bukuna',
@@ -119,10 +123,10 @@ export default function CreateStory({ editStoryId = null }) {
           saved = await createUserStory(payload);
           setHasSavedOnce(true);
         }
-        if (saved && saved.id && saved.id !== payload.id) {
+        if (saved && saved.id && saved.id !== dataToSave.id) {
           setStoryData((prev) => ({ ...prev, id: saved.id }));
         }
-        if (!editStoryId && nextStatus === 'draf') {
+        if (!editStoryId && nextStatus === 'draf' && saved && saved.id) {
           try {
             sessionStorage.setItem(WORKING_DRAFT_KEY, saved.id);
           } catch {
@@ -132,9 +136,9 @@ export default function CreateStory({ editStoryId = null }) {
         setIsDirty(false);
         return saved;
       } catch (err) {
-        if (err && err.isQuotaError) {
-          setQuotaError(err.message);
-        }
+        setQuotaError(
+          (err && err.message) || 'Gagal menyimpan cerita ke database Supabase.'
+        );
         throw err;
       }
     },
@@ -298,8 +302,8 @@ export default function CreateStory({ editStoryId = null }) {
       }
       showToast('Cerita berhasil disimpan sebagai Draf!');
       navigate('/cerita-saya');
-    } catch {
-      showToast('Gagal menyimpan draf. Periksa ruang penyimpanan peramban.');
+    } catch (err) {
+      showToast((err && err.message) || 'Gagal menyimpan draf cerita ke Supabase.');
     }
   };
 
@@ -318,8 +322,8 @@ export default function CreateStory({ editStoryId = null }) {
       }
       showToast('Hore! Ceritamu berhasil diterbitkan!');
       navigate('/cerita-saya');
-    } catch {
-      showToast('Gagal menerbitkan cerita. Periksa ruang penyimpanan peramban.');
+    } catch (err) {
+      showToast((err && err.message) || 'Gagal menerbitkan cerita ke Supabase.');
     }
   };
 
