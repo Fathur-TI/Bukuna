@@ -17,6 +17,7 @@ import {
   saveImage,
   getImage,
   isIndexedDbImageId,
+  isPublicHttpUrl,
 } from '../../services/storyStorage';
 
 const PRESET_THEMES = [
@@ -58,6 +59,7 @@ export default function ImageUploader({
   const [cropSource, setCropSource] = useState(null);
 
   const hasUploadedImage =
+    isPublicHttpUrl(imageValue) ||
     isIndexedDbImageId(imageValue) ||
     (typeof imageValue === 'string' &&
       (imageValue.startsWith('blob:') || imageValue.startsWith('data:image/')));
@@ -107,7 +109,7 @@ export default function ImageUploader({
     setErrorMsg('');
     try {
       let srcBlob = null;
-      if (isIndexedDbImageId(imageValue)) {
+      if (isIndexedDbImageId(imageValue) || isPublicHttpUrl(imageValue)) {
         const res = await getImage(imageValue);
         srcBlob = res.blob;
       }
@@ -133,7 +135,7 @@ export default function ImageUploader({
 
   const handleOpenCropper = async () => {
     if (!hasUploadedImage) return;
-    if (isIndexedDbImageId(imageValue)) {
+    if (isIndexedDbImageId(imageValue) || isPublicHttpUrl(imageValue)) {
       const { blob } = await getImage(imageValue);
       if (blob) {
         setCropSource(blob);

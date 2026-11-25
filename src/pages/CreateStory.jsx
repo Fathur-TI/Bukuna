@@ -116,8 +116,11 @@ export default function CreateStory({ editStoryId = null }) {
         if (exists || hasSavedOnce) {
           saved = await updateUserStory(payload.id, payload);
         } else {
-          saved = createUserStory(payload);
+          saved = await createUserStory(payload);
           setHasSavedOnce(true);
+        }
+        if (saved && saved.id && saved.id !== payload.id) {
+          setStoryData((prev) => ({ ...prev, id: saved.id }));
         }
         if (!editStoryId && nextStatus === 'draf') {
           try {

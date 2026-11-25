@@ -27,6 +27,9 @@ export function resolvePublicStoryUrl(rawPath) {
  */
 export function getSmallStoryUrl(rawPath) {
   if (!rawPath || typeof rawPath !== 'string') return '';
+  if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+    return rawPath;
+  }
   if (rawPath.endsWith('-sm.webp')) return rawPath;
   if (rawPath.endsWith('.webp')) {
     return rawPath.replace(/\.webp$/, '-sm.webp');
@@ -37,9 +40,11 @@ export function getSmallStoryUrl(rawPath) {
 export function isStaticStoryImagePath(variant) {
   if (!variant || typeof variant !== 'string') return false;
   return (
+    variant.startsWith('http://') ||
+    variant.startsWith('https://') ||
     variant.startsWith('/stories/') ||
     variant.startsWith('public/stories/') ||
-    /\.(webp|png|jpe?g|avif)$/i.test(variant)
+    /\.(webp|png|jpe?g|avif)(\?.*)?$/i.test(variant)
   );
 }
 

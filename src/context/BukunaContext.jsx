@@ -9,6 +9,7 @@ import {
   exportStoryToJson,
   importStoryFromJson,
   preloadAllStoryImages,
+  fetchAndSyncStoriesFromSupabase,
   subscribeStoryStorage,
 } from '../services/storyStorage';
 import {
@@ -138,8 +139,22 @@ export function BukunaProvider({ children }) {
   const [catalogStories, setCatalogStories] = useState(() => initialStories);
   const [catalogLoading, setCatalogLoading] = useState(false);
 
-  // Daftar cerita buatan pengguna (termasuk draf & terbit)
-  const [myStories, setMyStories] = useState(() => getMyStories());
+  // Daftar seluruh cerita yang tersimpan di tabel `public.stories` Supabase
+  const [allSupabaseStories, setAllSupabaseStories] = useState(() => getMyStories());
+
+  // Filter `myStories` untuk halaman "Cerita Saya" (/cerita-saya):
+  // Jika user login di Supabase, tampilkan cerita yang dibuat oleh user tersebut (atau semua cerita pengguna di Mode Demo)
+  const myStories = useMemo(() => {
+    if (isDemoMode) {
+      return allSupabaseStories;
+    }
+    if (!user || !user.id) {
+      return [];
+    }
+    return allSupabaseStories.filter(
+      (s) => s && (String(s.user_id) === String(user.id) || !s.user_id)
+    );
+  }, [allSupabaseStories, user, isDemoMode]);
 
   const [favorites, setFavorites] = useState(() => {
     const { validStoryIds } = buildValidIdSets(getMyStories());
@@ -220,7 +235,11 @@ export function BukunaProvider({ children }) {
   const refreshCatalogStories = useCallback(async () => {
     setCatalogLoading(true);
     try {
-      const res = await fetchCatalogStories({ autoMigrateIfEmpty: true });
+      const [res] = await Promise.all([
+        fetchCatalogStories({ autoMigrateIfEmpty: true }),
+        fetchAndSyncStoriesFromSupabase(),
+      ]);
+      setAllSupabaseStories(getMyStories());
       if (res && Array.isArray(res.stories) && res.stories.length > 0) {
         setCatalogStories(res.stories);
       }
@@ -255,11 +274,11 @@ export function BukunaProvider({ children }) {
     });
   }, [myStories, catalogStories]);
 
-  // Preload gambar IndexedDB saat aplikasi dimuat & sinkronkan perubahan storyStorage
+  // Preload cerita dari Supabase saat aplikasi dimuat & sinkronkan perubahan storyStorage
   useEffect(() => {
     preloadAllStoryImages().catch(() => {});
     const unsubscribe = subscribeStoryStorage(() => {
-      setMyStories(getMyStories());
+      setAllSupabaseStories(getMyStories());
     });
     return unsubscribe;
   }, []);
@@ -296,9 +315,12 @@ export function BukunaProvider({ children }) {
     }
   }, [quizResults]);
 
-  // Gabungkan cerita terbit buatan pengguna dengan cerita katalog (dari tabel `stories` Supabase atau fallback statis)
+  // Gabungkan seluruh cerita publik dari tabel `public.stories` Supabase (cerita dari semua akun)
+  // dengan cerita katalog bawaan agar tampil secara publik di Beranda, Koleksi, dan Detail Cerita
   const stories = useMemo(() => {
-    const publishedUserStories = myStories.filter((s) => s.status === 'terbit');
+    const publishedSupabaseStories = allSupabaseStories.filter(
+      (s) => s.status !== 'draf'
+    );
     const activeCatalog =
       Array.isArray(catalogStories) && catalogStories.length > 0
         ? catalogStories
@@ -306,22 +328,26 @@ export function BukunaProvider({ children }) {
     const seenIds = new Set();
     const merged = [];
 
-    [...publishedUserStories, ...activeCatalog].forEach((item) => {
-      if (item && item.id && !seenIds.has(item.id)) {
-        seenIds.add(item.id);
-        merged.push(item);
+    [...publishedSupabaseStories, ...activeCatalog, ...initialStories].forEach(
+      (item) => {
+        if (item && item.id && !seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          merged.push(item);
+        }
       }
-    });
+    );
 
     return merged;
-  }, [myStories, catalogStories]);
+  }, [allSupabaseStories, catalogStories]);
 
-  // Ambil cerita berdasarkan ID atau slug (termasuk cerita katalog Supabase & draf milik pengguna)
+  // Ambil cerita berdasarkan ID atau slug (termasuk cerita dari semua akun di tabel `stories` Supabase)
   const getAnyStoryById = useCallback(
     (storyId) => {
       if (!storyId) return stories[0] || initialStories[0];
-      const fromUser = myStories.find((s) => s.id === storyId || s.slug === storyId);
-      if (fromUser) return fromUser;
+      const fromAllSupabase = allSupabaseStories.find(
+        (s) => s.id === storyId || s.slug === storyId
+      );
+      if (fromAllSupabase) return fromAllSupabase;
       const fromCatalog = (catalogStories || []).find(
         (s) => s.id === storyId || s.slug === storyId
       );
@@ -329,35 +355,61 @@ export function BukunaProvider({ children }) {
       const fromInitial = initialStories.find((s) => s.id === storyId);
       return fromInitial || stories[0] || initialStories[0];
     },
-    [myStories, catalogStories, stories]
+    [allSupabaseStories, catalogStories, stories]
   );
 
-  const refreshMyStories = useCallback(() => {
-    setMyStories(getMyStories());
+  const refreshMyStories = useCallback(async () => {
+    await fetchAndSyncStoriesFromSupabase();
+    setAllSupabaseStories(getMyStories());
   }, []);
 
   const createUserStory = useCallback(
-    (storyData) => {
-      const created = createStory({
+    async (storyData) => {
+      const authorDisplayName =
+        storyData.author_name ||
+        storyData.penulis ||
+        (user && (user.nama_akun || user.nama || user.name || user.full_name)) ||
+        'Guru & Orang Tua Bukuna';
+
+      const created = await createStory({
         ...storyData,
-        penulis: storyData.penulis || (user && user.name) || 'Guru & Orang Tua Bukuna',
+        user_id: storyData.user_id || (user && !user.isDemo ? user.id : null),
+        author_name: authorDisplayName,
+        penulis: authorDisplayName,
       });
-      setMyStories(getMyStories());
+      setAllSupabaseStories(getMyStories());
+      refreshCatalogStories().catch(() => {});
       return created;
     },
-    [user]
+    [user, refreshCatalogStories]
   );
 
-  const updateUserStory = useCallback(async (id, storyData) => {
-    const updated = await updateStory(id, storyData);
-    setMyStories(getMyStories());
-    return updated;
-  }, []);
+  const updateUserStory = useCallback(
+    async (id, storyData) => {
+      const authorDisplayName =
+        storyData.author_name ||
+        storyData.penulis ||
+        (user && (user.nama_akun || user.nama || user.name || user.full_name)) ||
+        'Guru & Orang Tua Bukuna';
+
+      const updated = await updateStory(id, {
+        ...storyData,
+        user_id: storyData.user_id || (user && !user.isDemo ? user.id : null),
+        author_name: authorDisplayName,
+        penulis: authorDisplayName,
+      });
+      setAllSupabaseStories(getMyStories());
+      refreshCatalogStories().catch(() => {});
+      return updated;
+    },
+    [user, refreshCatalogStories]
+  );
 
   const deleteUserStory = useCallback(
     async (id) => {
       await deleteStory(id);
-      setMyStories(getMyStories());
+      setAllSupabaseStories(getMyStories());
+      refreshCatalogStories().catch(() => {});
       setFavorites((prev) => prev.filter((item) => item !== id));
       setCollections((prev) => prev.filter((item) => item !== id));
       setReadingHistory((prev) => {
@@ -371,18 +423,22 @@ export function BukunaProvider({ children }) {
       );
       showToast('Cerita beserta gambar dan kuisnya telah dihapus.');
     },
-    [showToast]
+    [showToast, refreshCatalogStories]
   );
 
   const exportUserStory = useCallback(async (id) => {
     return await exportStoryToJson(id);
   }, []);
 
-  const importUserStory = useCallback(async (jsonInput) => {
-    const imported = await importStoryFromJson(jsonInput);
-    setMyStories(getMyStories());
-    return imported;
-  }, []);
+  const importUserStory = useCallback(
+    async (jsonInput) => {
+      const imported = await importStoryFromJson(jsonInput, user);
+      setAllSupabaseStories(getMyStories());
+      refreshCatalogStories().catch(() => {});
+      return imported;
+    },
+    [user, refreshCatalogStories]
+  );
 
   const login = useCallback(
     async ({ email, password }) => {

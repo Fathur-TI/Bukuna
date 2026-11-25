@@ -70,6 +70,9 @@ export function loadImageFromSource(source) {
       tempUrl = URL.createObjectURL(source);
       img.src = tempUrl;
     } else if (typeof source === 'string') {
+      if (source.startsWith('http://') || source.startsWith('https://')) {
+        img.crossOrigin = 'anonymous';
+      }
       img.src = source;
     } else {
       reject(new Error('Sumber gambar tidak dikenali.'));

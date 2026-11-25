@@ -1,18 +1,11 @@
 -- =============================================================================
--- BUKUNA WEB — SKEMA DATABASE SUPABASE (PROFIL, CERITA, ULASAN & DASHBOARD ADMIN)
+-- BUKUNA WEB — SKEMA DATABASE SUPABASE (PROFIL, CERITA, STORAGE, ULASAN & ADMIN)
 -- =============================================================================
 -- CARA MENJALANKAN DI SUPABASE DASHBOARD:
 -- 1. Buka proyek Anda di https://supabase.com/dashboard
 -- 2. Klik menu "SQL Editor" di bilah kiri, lalu klik "+ New query"
 -- 3. Salin seluruh isi file supabase/schema.sql ini dan tempelkan ke editor
 -- 4. Klik tombol "Run" (atau tekan Ctrl+Enter) hingga muncul pesan "Success"
---
--- CARA MENJADIKAN AKUN ANDA SEBAGAI ADMIN LEWAT TABLE EDITOR:
--- 1. Daftar akun terlebih dahulu melalui halaman Daftar (/daftar) di website BUKUNA
--- 2. Buka Supabase Dashboard -> klik menu "Table Editor" di bilah kiri
--- 3. Pilih tabel "profiles" pada skema "public"
--- 4. Cari baris akun Anda, ubah nilai kolom "role" menjadi 'ADMIN' (atau kolom "peran" menjadi 'admin'),
---    lalu klik Save. (Trigger sinkronisasi otomatis akan menyamakan kolom role dan peran).
 -- =============================================================================
 
 -- =============================================================================
@@ -29,7 +22,6 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Pastikan seluruh kolom kompatibel (baik skema nama_akun/peran/dibuat maupun full_name/role/created_at)
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS nama_akun TEXT NOT NULL DEFAULT 'Guru & Orang Tua Bukuna';
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS full_name TEXT NULL;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS peran TEXT NOT NULL DEFAULT 'guru';
@@ -37,7 +29,6 @@ ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS dibuat TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
--- Hapus constraint lama yang terlalu ketat jika ada, lalu pasang constraint yang mendukung huruf kecil & kapital
 ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_peran_check;
 ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_role_check;
 
@@ -51,7 +42,6 @@ ALTER TABLE public.profiles
 
 COMMENT ON TABLE public.profiles IS 'Profil akun Guru, Orang Tua, & Admin BUKUNA yang terhubung ke auth.users.';
 
--- Fungsi bantu untuk memeriksa apakah pengguna yang sedang login adalah ADMIN
 CREATE OR REPLACE FUNCTION public.is_bukuna_admin()
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -79,14 +69,12 @@ DROP POLICY IF EXISTS "Profil publik dapat dibaca untuk menampilkan nama penulis
 DROP POLICY IF EXISTS "Pengguna hanya dapat membuat profilnya sendiri dengan peran guru" ON public.profiles;
 DROP POLICY IF EXISTS "Pengguna hanya dapat mengubah profilnya sendiri tanpa mengubah peran" ON public.profiles;
 
--- A. SELECT: Semua pengunjung dapat membaca profil untuk nama penulis ulasan & Admin dapat melihat daftar pengguna
 CREATE POLICY "Profil publik dapat dibaca untuk menampilkan nama penulis ulasan"
   ON public.profiles
   FOR SELECT
   TO anon, authenticated
   USING (true);
 
--- B. INSERT: Pengguna hanya dapat menyisipkan baris profil miliknya sendiri (bukan sebagai ADMIN)
 CREATE POLICY "Pengguna hanya dapat membuat profilnya sendiri dengan peran guru"
   ON public.profiles
   FOR INSERT
@@ -97,7 +85,6 @@ CREATE POLICY "Pengguna hanya dapat membuat profilnya sendiri dengan peran guru"
     AND UPPER(COALESCE(role, 'USER')) <> 'ADMIN'
   );
 
--- C. UPDATE: Pengguna hanya dapat mengubah profilnya sendiri tanpa menaikkan role/peran sendiri
 CREATE POLICY "Pengguna hanya dapat mengubah profilnya sendiri tanpa mengubah peran"
   ON public.profiles
   FOR UPDATE
@@ -107,7 +94,6 @@ CREATE POLICY "Pengguna hanya dapat mengubah profilnya sendiri tanpa mengubah pe
     auth.uid() = id OR public.is_bukuna_admin()
   );
 
--- Trigger Sinkronisasi Kolom (nama_akun <-> full_name, peran <-> role) & Pencegahan Escalation
 CREATE OR REPLACE FUNCTION public.sync_and_protect_profile_columns()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -115,7 +101,6 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  -- Sinkronkan nama_akun dan full_name
   IF NEW.nama_akun IS NULL OR TRIM(NEW.nama_akun) = '' THEN
     NEW.nama_akun := COALESCE(NULLIF(TRIM(NEW.full_name), ''), 'Guru & Orang Tua Bukuna');
   END IF;
@@ -123,7 +108,6 @@ BEGIN
     NEW.full_name := NEW.nama_akun;
   END IF;
 
-  -- Jika UPDATE dipanggil oleh pengguna biasa (bukan dari SQL Editor/Table Editor/Admin), kunci kolom peran & role
   IF TG_OP = 'UPDATE' THEN
     IF (current_user IN ('authenticated', 'anon') OR auth.role() IN ('authenticated', 'anon'))
        AND NOT public.is_bukuna_admin() THEN
@@ -134,7 +118,6 @@ BEGIN
       RETURN NEW;
     END IF;
 
-    -- Jika diubah dari Table Editor (misal salah satu kolom role atau peran diubah ke ADMIN), sinkronkan keduanya
     IF UPPER(COALESCE(NEW.role, '')) = 'ADMIN' AND UPPER(COALESCE(OLD.role, '')) <> 'ADMIN' THEN
       NEW.peran := 'admin';
       NEW.role := 'ADMIN';
@@ -143,7 +126,6 @@ BEGIN
       NEW.peran := 'admin';
     END IF;
   ELSE
-    -- Saat INSERT baru: selaraskan role & peran
     IF UPPER(COALESCE(NEW.role, '')) = 'ADMIN' OR UPPER(COALESCE(NEW.peran, '')) = 'ADMIN' THEN
       NEW.role := 'ADMIN';
       NEW.peran := 'admin';
@@ -161,7 +143,6 @@ CREATE TRIGGER trg_sync_and_protect_profiles
   FOR EACH ROW
   EXECUTE FUNCTION public.sync_and_protect_profile_columns();
 
--- Trigger Otomatis Membuat Baris di public.profiles Saat Pengguna Baru Mendaftar di auth.users
 CREATE OR REPLACE FUNCTION public.handle_new_bukuna_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -205,25 +186,54 @@ CREATE TRIGGER on_auth_user_created
 
 
 -- =============================================================================
--- BAGIAN 2: TABEL KOLEKSI CERITA (public.stories) — DIKELOLA LEWAT DASHBOARD ADMIN
+-- BAGIAN 2: TABEL KOLEKSI CERITA PUBLIK (public.stories)
+-- Menyimpan cerita bawaan, cerita yang ditambah Admin, serta cerita yang dibuat
+-- oleh seluruh pengguna (dengan kolom user_id, author_name, title, synopsis,
+-- category, age_group, cover_url, dan pages jsonb).
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS public.stories (
-  id TEXT PRIMARY KEY,
-  slug TEXT UNIQUE NOT NULL,
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  slug TEXT NULL,
+  user_id UUID NULL REFERENCES auth.users(id) ON DELETE SET NULL,
+  author_name TEXT NOT NULL DEFAULT 'Guru & Orang Tua Bukuna',
   title TEXT NOT NULL,
   synopsis TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT 'Petualangan',
+  age_group TEXT NOT NULL DEFAULT '4-5 Tahun',
   age_category TEXT NOT NULL DEFAULT '4-5 Tahun',
   cover_url TEXT NOT NULL DEFAULT '/stories/kucing-hutan/cover.webp',
   moral_value TEXT NOT NULL DEFAULT '',
   pages JSONB NOT NULL DEFAULT '[]'::jsonb,
+  quiz JSONB NULL,
+  status TEXT NOT NULL DEFAULT 'terbit',
   content TEXT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE public.stories IS 'Koleksi buku cerita anak BUKUNA yang dapat dikelola melalui Dashboard Admin (/admin).';
+-- Pastikan semua kolom yang dibutuhkan tersedia meskipun tabel stories sudah dibuat sebelumnya
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS slug TEXT NULL;
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS user_id UUID NULL REFERENCES auth.users(id) ON DELETE SET NULL;
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS author_name TEXT NOT NULL DEFAULT 'Guru & Orang Tua Bukuna';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT 'Cerita Tanpa Judul';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS synopsis TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'Petualangan';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS age_group TEXT NOT NULL DEFAULT '4-5 Tahun';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS age_category TEXT NOT NULL DEFAULT '4-5 Tahun';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS cover_url TEXT NOT NULL DEFAULT '/stories/kucing-hutan/cover.webp';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS moral_value TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS pages JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS quiz JSONB NULL;
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'terbit';
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS content TEXT NULL;
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS idx_stories_created_at ON public.stories (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stories_user_id ON public.stories (user_id);
+
+COMMENT ON TABLE public.stories IS 'Koleksi buku cerita anak BUKUNA (publik untuk semua akun & pengunjung).';
 
 ALTER TABLE public.stories ENABLE ROW LEVEL SECURITY;
 
@@ -234,37 +244,86 @@ DROP POLICY IF EXISTS "Semua pengunjung dapat membaca katalog cerita" ON public.
 DROP POLICY IF EXISTS "Hanya Admin yang dapat menambah cerita" ON public.stories;
 DROP POLICY IF EXISTS "Hanya Admin yang dapat mengubah cerita" ON public.stories;
 DROP POLICY IF EXISTS "Hanya Admin yang dapat menghapus cerita" ON public.stories;
+DROP POLICY IF EXISTS "Pengguna login dapat membuat cerita baru" ON public.stories;
+DROP POLICY IF EXISTS "Pemilik cerita atau Admin dapat mengubah cerita" ON public.stories;
+DROP POLICY IF EXISTS "Pemilik cerita atau Admin dapat menghapus cerita" ON public.stories;
 
--- A. SELECT: Semua pengunjung (anon & authenticated) dapat membaca cerita di Beranda, Koleksi, & Halaman Baca
+-- A. SELECT: Semua pengunjung (anon & authenticated) dapat membaca seluruh cerita dari semua akun
 CREATE POLICY "Semua pengunjung dapat membaca katalog cerita"
   ON public.stories
   FOR SELECT
   TO anon, authenticated
   USING (true);
 
--- B. INSERT / UPDATE / DELETE: Hanya pengguna dengan role/peran ADMIN yang dapat mengelola tabel stories
-CREATE POLICY "Hanya Admin yang dapat menambah cerita"
+-- B. INSERT: Pengguna yang sudah login (authenticated) atau Admin dapat membuat cerita baru
+CREATE POLICY "Pengguna login dapat membuat cerita baru"
   ON public.stories
   FOR INSERT
   TO authenticated
-  WITH CHECK (public.is_bukuna_admin());
+  WITH CHECK (
+    auth.uid() = user_id
+    OR user_id IS NULL
+    OR public.is_bukuna_admin()
+  );
 
-CREATE POLICY "Hanya Admin yang dapat mengubah cerita"
+-- C. UPDATE: Pemilik cerita (auth.uid() = user_id) atau Admin dapat mengubah cerita
+CREATE POLICY "Pemilik cerita atau Admin dapat mengubah cerita"
   ON public.stories
   FOR UPDATE
   TO authenticated
-  USING (public.is_bukuna_admin())
-  WITH CHECK (public.is_bukuna_admin());
+  USING (auth.uid() = user_id OR public.is_bukuna_admin())
+  WITH CHECK (auth.uid() = user_id OR public.is_bukuna_admin());
 
-CREATE POLICY "Hanya Admin yang dapat menghapus cerita"
+-- D. DELETE: Pemilik cerita (auth.uid() = user_id) atau Admin dapat menghapus cerita
+CREATE POLICY "Pemilik cerita atau Admin dapat menghapus cerita"
   ON public.stories
   FOR DELETE
   TO authenticated
-  USING (public.is_bukuna_admin());
+  USING (auth.uid() = user_id OR public.is_bukuna_admin());
 
 
 -- =============================================================================
--- BAGIAN 3: TABEL CATATAN & ULASAN ORANG TUA (public.story_comments)
+-- BAGIAN 3: BUCKET SUPABASE STORAGE (story-images)
+-- Menyimpan gambar sampul (cover) dan gambar tiap halaman cerita yang diunggah user
+-- =============================================================================
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('story-images', 'story-images', true)
+ON CONFLICT (id) DO UPDATE
+  SET public = true;
+
+DROP POLICY IF EXISTS "Gambar cerita publik dapat dilihat semua orang" ON storage.objects;
+DROP POLICY IF EXISTS "Pengguna login dapat mengunggah gambar cerita" ON storage.objects;
+DROP POLICY IF EXISTS "Pengguna login dapat memperbarui gambar cerita" ON storage.objects;
+DROP POLICY IF EXISTS "Pengguna login dapat menghapus gambar cerita" ON storage.objects;
+
+CREATE POLICY "Gambar cerita publik dapat dilihat semua orang"
+  ON storage.objects
+  FOR SELECT
+  TO anon, authenticated
+  USING (bucket_id = 'story-images');
+
+CREATE POLICY "Pengguna login dapat mengunggah gambar cerita"
+  ON storage.objects
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (bucket_id = 'story-images');
+
+CREATE POLICY "Pengguna login dapat memperbarui gambar cerita"
+  ON storage.objects
+  FOR UPDATE
+  TO authenticated
+  USING (bucket_id = 'story-images');
+
+CREATE POLICY "Pengguna login dapat menghapus gambar cerita"
+  ON storage.objects
+  FOR DELETE
+  TO authenticated
+  USING (bucket_id = 'story-images');
+
+
+-- =============================================================================
+-- BAGIAN 4: TABEL CATATAN & ULASAN ORANG TUA (public.story_comments)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS public.story_comments (
@@ -302,21 +361,18 @@ DROP POLICY IF EXISTS "Pengguna login dapat menulis ulasan atas namanya sendiri"
 DROP POLICY IF EXISTS "Pengguna hanya dapat menghapus ulasannya sendiri" ON public.story_comments;
 DROP POLICY IF EXISTS "Pemilik ulasan atau Admin dapat menghapus komentar" ON public.story_comments;
 
--- A. SELECT: Semua pengunjung dapat melihat daftar ulasan orang tua pada cerita
 CREATE POLICY "Semua pengunjung dapat membaca ulasan cerita"
   ON public.story_comments
   FOR SELECT
   TO anon, authenticated
   USING (true);
 
--- B. INSERT: Hanya pengguna yang sudah login yang dapat mengirim ulasan dengan user_id miliknya sendiri
 CREATE POLICY "Pengguna login dapat menulis ulasan atas namanya sendiri"
   ON public.story_comments
   FOR INSERT
   TO authenticated
   WITH CHECK (auth.uid() = user_id);
 
--- C. DELETE: Pemilik komentar (auth.uid() = user_id) ATAU Admin (public.is_bukuna_admin()) dapat menghapus komentar
 CREATE POLICY "Pemilik ulasan atau Admin dapat menghapus komentar"
   ON public.story_comments
   FOR DELETE

@@ -49,11 +49,13 @@ export function normalizeDbStoryToBukuna(row) {
   const judul = String(row.title || row.judul || 'Cerita Tanpa Judul').trim();
   const sinopsis = String(row.synopsis || row.sinopsis || '').trim();
   const kategori = String(row.category || row.kategori || 'Petualangan').trim();
-  const rawUsia = String(row.age_category || row.usia || '4-5 Tahun').trim();
+  const rawUsia = String(row.age_group || row.age_category || row.usia || '4-5 Tahun').trim();
   const usia = migrateAgeLabel(rawUsia);
   const kelompokUsia = extractAgeGroup(usia);
   const cover = String(row.cover_url || row.cover || '/stories/kucing-hutan/cover.webp').trim();
   const pesanMoral = String(row.moral_value || row.pesanMoral || '').trim();
+  const penulis = String(row.author_name || row.penulis || 'Guru & Orang Tua Bukuna').trim();
+  const userId = row.user_id || row.userId || null;
 
   let rawPages = [];
   if (Array.isArray(row.pages) && row.pages.length > 0) {
@@ -103,11 +105,15 @@ export function normalizeDbStoryToBukuna(row) {
   return {
     id,
     slug,
+    user_id: userId,
+    author_name: penulis,
+    penulis,
     judul,
     title: judul,
     kategori,
     category: kategori,
     usia,
+    age_group: usia,
     age_category: usia,
     kelompokUsia,
     cover,
@@ -120,12 +126,15 @@ export function normalizeDbStoryToBukuna(row) {
     pesanMoral,
     moral_value: pesanMoral,
     pages,
+    quiz: row.quiz || null,
+    status: row.status || 'terbit',
     content:
       typeof row.content === 'string' && row.content.trim()
         ? row.content
         : pages.map((p) => p.teks).join('\n\n'),
     created_at: row.created_at || new Date().toISOString(),
-    sumber: 'katalog',
+    dibuat: row.created_at || new Date().toISOString(),
+    sumber: userId ? 'pengguna' : 'katalog',
   };
 }
 
@@ -138,22 +147,31 @@ export function buildDbStoryPayload(input) {
   const id = String(input.id || slug).trim();
   const synopsis = String(input.synopsis || input.sinopsis || '').trim();
   const category = String(input.category || input.kategori || 'Petualangan').trim();
-  const age_category = migrateAgeLabel(
-    String(input.age_category || input.usia || '4-5 Tahun').trim()
+  const age_group = migrateAgeLabel(
+    String(input.age_group || input.age_category || input.usia || '4-5 Tahun').trim()
   );
   const cover_url = String(
     input.cover_url || input.cover || '/stories/kucing-hutan/cover.webp'
   ).trim();
-  const moral_value = String(input.moral_value || input.pesanMoral || '').trim();
+  const author_name = String(
+    input.author_name || input.penulis || 'Guru & Orang Tua Bukuna'
+  ).trim();
+  const user_id = input.user_id || input.userId || null;
 
   let pages = [];
   if (Array.isArray(input.pages) && input.pages.length > 0) {
-    pages = input.pages.map((p, idx) => ({
-      halaman: idx + 1,
-      gambar: (p && (p.gambar || p.image_url)) || cover_url,
-      alt: (p && p.alt) || `${title} - Halaman ${idx + 1}`,
-      teks: String((p && (p.teks || p.text)) || '').trim(),
-    }));
+    pages = input.pages.map((p, idx) => {
+      const pageImg = (p && (p.gambar || p.image_url)) || cover_url;
+      const pageText = String((p && (p.teks || p.text)) || '').trim();
+      return {
+        halaman: idx + 1,
+        gambar: pageImg,
+        image_url: pageImg,
+        alt: (p && p.alt) || `${title} - Halaman ${idx + 1}`,
+        teks: pageText,
+        text: pageText,
+      };
+    });
   } else if (typeof input.content === 'string' && input.content.trim()) {
     const paragraphs = input.content
       .split(/\n\s*\n/)
@@ -162,8 +180,10 @@ export function buildDbStoryPayload(input) {
     pages = paragraphs.map((pText, idx) => ({
       halaman: idx + 1,
       gambar: cover_url,
+      image_url: cover_url,
       alt: `${title} - Halaman ${idx + 1}`,
       teks: pText,
+      text: pText,
     }));
   }
 
@@ -172,25 +192,24 @@ export function buildDbStoryPayload(input) {
       {
         halaman: 1,
         gambar: cover_url,
+        image_url: cover_url,
         alt: title,
         teks: synopsis || 'Halaman pertama cerita.',
+        text: synopsis || 'Halaman pertama cerita.',
       },
     ];
   }
 
-  const content = pages.map((p) => p.teks).join('\n\n');
-
   return {
     id,
-    slug,
+    user_id,
+    author_name,
     title,
     synopsis,
     category,
-    age_category,
+    age_group,
     cover_url,
-    moral_value,
     pages,
-    content,
   };
 }
 
