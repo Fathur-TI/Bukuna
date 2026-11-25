@@ -1,0 +1,381 @@
+@import "tailwindcss";
+
+:root {
+  --bg-teal-dark: #007A78;
+  --bg-teal-darker: #005E5C;
+  --bg-teal-light: #1FAFAA;
+  --bg-teal-nav: #159A95;
+  --accent-orange: #E07030;
+  --accent-orange-hover: #C95B1E;
+  --accent-orange-light: #F59256;
+  --text-cream: #FFE9B0;
+  --text-dark: #062D2C;
+  --font-heading: 'Fredoka', sans-serif;
+  --font-body: var(--font-heading);
+  --font-story: 'Andika', sans-serif;
+
+  /* Token ukuran subteks responsif (clamp) */
+  --text-sub-hero: clamp(1rem, 2.5vw, 1.25rem);
+  --text-sub-section: clamp(0.9375rem, 2.2vw, 1.125rem);
+  --text-sub-body: clamp(1rem, 2.2vw, 1.125rem);
+  --text-label: clamp(0.875rem, 1.8vw, 0.9375rem);
+  --text-chip: 0.875rem;
+  --text-form-label: clamp(0.9375rem, 2vw, 1rem);
+  --text-help: clamp(0.875rem, 1.8vw, 0.9375rem);
+  --text-nav: clamp(0.75rem, 1.6vw, 0.8125rem);
+
+  /* Token warna per kata untuk judul (<ColorfulTitle />) */
+  --title-1: #FFE9B0;
+  --title-2: #A8E063;
+  --title-3: #8FD8FF;
+  --title-4: #FFB3C7;
+  --title-pill-bg: #D9651F;
+}
+
+@layer base {
+  html, body {
+    background-color: var(--bg-teal-dark);
+    color: #FFFFFF;
+    font-family: var(--font-heading);
+    font-weight: 500;
+    line-height: 1.55;
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+    max-width: 100vw;
+  }
+
+  .grid > * {
+    min-width: 0;
+  }
+
+  h1, h2, h3, h4, .font-heading {
+    font-family: var(--font-heading);
+  }
+
+  input, textarea, select {
+    font-family: var(--font-heading);
+    font-weight: 500;
+  }
+
+  input::placeholder, textarea::placeholder {
+    font-family: var(--font-heading);
+    font-weight: 500;
+    font-size: var(--text-help);
+    line-height: 1.5;
+  }
+}
+
+/* Kelas utilitas tipografi subteks berbasis CSS Variables (Fredoka 500) */
+.sub-hero {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-sub-hero) !important;
+  line-height: 1.55 !important;
+}
+
+.sub-section {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-sub-section) !important;
+  line-height: 1.55 !important;
+}
+
+.sub-body {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-sub-body) !important;
+  line-height: 1.6 !important;
+}
+
+.sub-label {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-label) !important;
+  line-height: 1.5 !important;
+}
+
+.sub-chip {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-chip) !important;
+  line-height: 1.5 !important;
+}
+
+.sub-form-label {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-form-label) !important;
+  line-height: 1.5 !important;
+}
+
+.sub-help {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-help) !important;
+  line-height: 1.5 !important;
+}
+
+.sub-nav {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  font-size: var(--text-nav) !important;
+  line-height: 1.5 !important;
+}
+
+.sub-top-nav {
+  font-family: var(--font-heading) !important;
+  font-weight: 500 !important;
+  line-height: 1.5 !important;
+}
+
+/* Font khusus Andika untuk Isi Cerita, Balon Ucapan Maskot, dan Soal Kuis */
+.font-story {
+  font-family: var(--font-story) !important;
+}
+
+/* === Judul Hero & Bagian Berwarna-Warni (<ColorfulTitle />) === */
+.bukuna-colorful-title {
+  line-height: 1.4 !important;
+}
+
+.bukuna-hero-title-wrap {
+  max-width: 11.4ch;
+}
+
+.bukuna-title-word {
+  display: inline-block;
+  font-family: inherit;
+  font-weight: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  line-height: 1.08;
+  text-shadow: 0 2px 4px rgba(4, 34, 33, 0.45);
+}
+
+.bukuna-title-word-pending {
+  opacity: 0;
+  transform: translateY(14px) scale(0.85);
+}
+
+.bukuna-title-word-enter {
+  animation-name: bukunaTitleWordIn;
+  animation-duration: 0.5s;
+  animation-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation-fill-mode: both;
+  will-change: transform, opacity;
+}
+
+.bukuna-title-word-done {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.bukuna-title-color-1 { color: var(--title-1); }
+.bukuna-title-color-2 { color: var(--title-2); }
+.bukuna-title-color-3 { color: var(--title-3); }
+.bukuna-title-color-4 { color: var(--title-4); }
+
+.bukuna-word-delay-0 { animation-delay: 0s; }
+.bukuna-word-delay-1 { animation-delay: 0.14s; }
+.bukuna-word-delay-2 { animation-delay: 0.28s; }
+.bukuna-word-delay-3 { animation-delay: 0.42s; }
+.bukuna-word-delay-4 { animation-delay: 0.56s; }
+.bukuna-word-delay-5 { animation-delay: 0.70s; }
+.bukuna-word-delay-6 { animation-delay: 0.84s; }
+.bukuna-word-delay-7 { animation-delay: 0.98s; }
+
+/* Sorotan pil oranye untuk kata "Dunia" */
+.bukuna-title-pill {
+  display: inline-block;
+  background-color: var(--title-pill-bg);
+  color: #FFFFFF;
+  padding: 0.02em 12px 0.05em 12px;
+  border-radius: 14px;
+  line-height: 1.08;
+  transform: rotate(-2deg);
+  cursor: pointer;
+  user-select: none;
+  font-family: inherit;
+  font-weight: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  box-shadow: 0 4px 10px rgba(0, 30, 29, 0.28);
+  text-shadow: none;
+  will-change: transform;
+}
+
+.bukuna-title-pill-idle {
+  animation: bukunaPillPeriodicWobble 3.5s ease-in-out 1.1s infinite;
+}
+
+.bukuna-title-pill-clicked {
+  animation: bukunaPillTapWobble 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 1;
+}
+
+/* Subteks hero muncul memudar setelah semua kata judul tampil */
+.bukuna-hero-sub-enter {
+  animation: bukunaHeroSubFadeIn 0.45s ease-out 0.98s both;
+}
+
+@keyframes bukunaTitleWordIn {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.85);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Bergoyang pelan (~0.5s dari siklus 3.5s) dari -2deg ke -5deg ke 2deg ke -2deg, scale hingga 1.06 */
+@keyframes bukunaPillPeriodicWobble {
+  0% {
+    transform: rotate(-2deg) scale(1);
+  }
+  4.5% {
+    transform: rotate(-5deg) scale(1.06);
+  }
+  9.5% {
+    transform: rotate(2deg) scale(1.06);
+  }
+  14.3% {
+    transform: rotate(-2deg) scale(1);
+  }
+  100% {
+    transform: rotate(-2deg) scale(1);
+  }
+}
+
+/* Goyang lebih besar sekali (±0.5s) saat kata "Dunia" diketuk/diklik */
+@keyframes bukunaPillTapWobble {
+  0% {
+    transform: rotate(-2deg) scale(1);
+  }
+  25% {
+    transform: rotate(-9deg) scale(1.14);
+  }
+  55% {
+    transform: rotate(6deg) scale(1.12);
+  }
+  80% {
+    transform: rotate(-5deg) scale(1.06);
+  }
+  100% {
+    transform: rotate(-2deg) scale(1);
+  }
+}
+
+@keyframes bukunaHeroSubFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Custom Doodle Background Pattern matching File 2 */
+.bukuna-doodle-bg {
+  background-color: var(--bg-teal-dark);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%23004E4D' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' opacity='0.48'%3E%3C!-- Open Book --%3E%3Cpath d='M20 35c10-4 20 0 25 5 5-5 15-9 25-5v28c-10-4-20 0-25 5-5-5-15-9-25-5V35z'/%3E%3Cpath d='M45 40v28'/%3E%3C!-- Star --%3E%3Cpolygon points='115,20 119,30 130,31 122,38 124,49 115,43 106,49 108,38 100,31 111,30'/%3E%3C!-- Pencil --%3E%3Cpath d='M175 25l12 12-28 28-15 3 3-15 28-28z'/%3E%3C!-- Paper Plane --%3E%3Cpath d='M200 85l30-15-10 35-10-10-10-10zM230 70l-20 20'/%3E%3C!-- Cloud --%3E%3Cpath d='M35 120a12 12 0 0 1 11-12 16 16 0 0 1 30-4 13 13 0 0 1 8 24H38a10 10 0 0 1-3-8z'/%3E%3C!-- Planet / Saturn --%3E%3Ccircle cx='135' cy='110' r='14'/%3E%3Cellipse cx='135' cy='110' rx='26' ry='7' transform='rotate(-22 135 110)'/%3E%3C!-- Magnifying Glass --%3E%3Ccircle cx='45' cy='185' r='14'/%3E%3Cpath d='M55 195l14 14'/%3E%3C!-- Lightbulb --%3E%3Cpath d='M115 170a15 15 0 0 1 9 27v7h-18v-7a15 15 0 0 1 9-27z'/%3E%3Cpath d='M110 209h10M112 214h6'/%3E%3C!-- Rocket / Cap --%3E%3Cpath d='M185 160c12 -12 28 -12 28 -12s0 16 -12 28l-16 -16z'/%3E%3Ccircle cx='199' cy='160' r='4'/%3E%3C!-- Little sparkles & bubbles --%3E%3Ccircle cx='85' cy='72' r='4'/%3E%3Ccircle cx='165' cy='135' r='3.5'/%3E%3Ccircle cx='80' cy='150' r='5'/%3E%3Cpath d='M155 215l4-8 4 8 8 4-8 4-4 8-4-8-8-4z'/%3E%3Cpath d='M18 85l3-6 3 6 6 3-6 3-3 6-3-6-6-3z'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 240px 240px;
+}
+
+/* Focus outline for keyboard accessibility */
+*:focus-visible {
+  outline: 3px solid var(--text-cream);
+  outline-offset: 2px;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #005E5C;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1FAFAA;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #E07030;
+}
+
+/* Animasi lembut untuk Maskot Rodri & Kuis Anak */
+@keyframes bukunaFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes bukunaGentleShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
+
+@keyframes bukunaHintGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 233, 176, 0.7); }
+  50% { box-shadow: 0 0 0 10px rgba(255, 233, 176, 0.15); }
+}
+
+.bukuna-mascot-float {
+  animation: bukunaFloat 3s ease-in-out infinite;
+}
+
+.bukuna-gentle-shake {
+  animation: bukunaGentleShake 0.35s ease-in-out 1;
+}
+
+.bukuna-hint-glow {
+  animation: bukunaHintGlow 1.6s ease-in-out infinite;
+}
+
+/* Di layar sangat sempit (<360px), ilustrasi hero turun ke bawah teks */
+@media (max-width: 359px) {
+  .bukuna-hero-layout {
+    flex-direction: column !important;
+    align-items: center !important;
+  }
+  .bukuna-hero-text {
+    width: 100% !important;
+  }
+  .bukuna-hero-media {
+    width: 82% !important;
+    justify-content: center !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+  }
+}
+
+/* Respect prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .bukuna-title-word-pending,
+  .bukuna-title-word-enter,
+  .bukuna-title-word-done,
+  .bukuna-hero-sub-enter {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .bukuna-title-pill,
+  .bukuna-title-pill-idle,
+  .bukuna-title-pill-clicked {
+    animation: none !important;
+    transform: rotate(-2deg) !important;
+  }
+}

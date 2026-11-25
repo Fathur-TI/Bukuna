@@ -1,0 +1,717 @@
+// Data Kuis Interaktif Anak Usia Dini BUKUNA (src/data/quizzes.js)
+// Dirancang khusus untuk anak usia 4-5 & 5-6 tahun: mengutamakan GAMBAR, SIMBOL, WARNA, dan SUARA.
+// Mendukung 6 tipe soal:
+// 1. 'pick-image'   : Pilih Gambar yang Benar
+// 2. 'count-objects': Hitung Benda (pilih angka besar berwarna)
+// 3. 'match-pairs'  : Cocokkan Pasangan (drag-and-drop atau sentuh dua kali)
+// 4. 'color-shape'  : Warna & Bentuk
+// 5. 'order-story'  : Urutkan Kejadian Cerita (3 gambar adegan)
+// 6. 'feeling-pick' : Perasaan Tokoh (wajah emoji: senang, sedih, takut, marah)
+
+export const STORY_QUIZZES = [
+  {
+    id: 'kuis-petualangan-kucing-di-hutan-ajaib',
+    storyId: 'petualangan-kucing-di-hutan-ajaib',
+    judul: 'Kuis Petualangan Rodri di Hutan Ajaib',
+    kategori: 'Cerita Bawaan',
+    usia: '4-5 Tahun',
+    cover: '/stories/kucing-hutan/cover.webp',
+    coverAlt: 'Rodri si kucing kecil berjalan riang di hutan',
+    icon: '🐱',
+    deskripsi: 'Yuk bantu kucing kecil Rodri mengingat petualangan serunya di hutan ajaib!',
+    isGeneral: false,
+    questions: [
+      {
+        id: 'rodri-q1',
+        type: 'pick-image',
+        prompt: 'Siapa tokoh hewan kecil yang suka menjelajah hutan di cerita tadi?',
+        hint: 'Hewan ini suka mengeong dan bernama Rodri!',
+        media: {
+          emoji: '🌲✨',
+          label: 'Tokoh Utama di Hutan Ajaib',
+        },
+        options: [
+          {
+            id: 'opt-kucing',
+            label: 'Rodri si Kucing Kecil',
+            emoji: '🐱',
+            bg: '#F97316',
+            isCorrect: true,
+          },
+          {
+            id: 'opt-gajah',
+            label: 'Gajah Besar',
+            emoji: '🐘',
+            bg: '#3B82F6',
+            isCorrect: false,
+          },
+          {
+            id: 'opt-ikan',
+            label: 'Ikan Laut',
+            emoji: '🐟',
+            bg: '#06B6D4',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'rodri-q2',
+        type: 'pick-image',
+        prompt: 'Rodri menemukan apa yang bersinar di balik pohon ek tua di tengah hutan?',
+        hint: 'Benda itu terbuat dari kayu dan berukir bintang emas!',
+        media: {
+          emoji: '🌳🌟',
+          label: 'Penemuan Rodri di Balik Pohon',
+        },
+        options: [
+          {
+            id: 'opt-pintu',
+            label: 'Pintu Ajaib Berbintang',
+            emoji: '🚪✨',
+            bg: '#D97706',
+            isCorrect: true,
+          },
+          {
+            id: 'opt-balon',
+            label: 'Balon Udara',
+            emoji: '🎈',
+            bg: '#EC4899',
+            isCorrect: false,
+          },
+          {
+            id: 'opt-kue',
+            label: 'Kue Manis',
+            emoji: '🎂',
+            bg: '#8B5CF6',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'rodri-q3',
+        type: 'count-objects',
+        prompt: 'Ayo hitung! Ada berapa pohon hijau di hutan tempat Rodri bermain?',
+        hint: 'Ketuk dan hitung satu per satu pohon cemaranya: satu, dua, tiga, empat!',
+        objectItem: {
+          emoji: '🌲',
+          name: 'Pohon Hutan',
+        },
+        targetCount: 4,
+        options: [
+          { id: 'num-2', label: '2', value: 2, bg: '#3B82F6', isCorrect: false },
+          { id: 'num-4', label: '4', value: 4, bg: '#10B981', isCorrect: true },
+          { id: 'num-6', label: '6', value: 6, bg: '#F59E0B', isCorrect: false },
+        ],
+      },
+      {
+        id: 'rodri-q4',
+        type: 'order-story',
+        prompt: 'Susun 3 gambar kejadian perjalanan Rodri dari awal sampai selesai ya!',
+        hint: 'Pertama Rodri menemukan pintu ajaib, lalu menolong tupai di jembatan, dan akhirnya pulang dengan senyum.',
+        sequence: [
+          {
+            id: 'seq-1',
+            correctOrder: 1,
+            emoji: '🐱🚪✨',
+            label: 'Menemukan pintu ajaib',
+            bg: '#0F766E',
+          },
+          {
+            id: 'seq-2',
+            correctOrder: 2,
+            emoji: '🐿️🌉🍄',
+            label: 'Menyeberang jembatan bersama Pipi',
+            bg: '#D97706',
+          },
+          {
+            id: 'seq-3',
+            correctOrder: 3,
+            emoji: '🏡🌅😺',
+            label: 'Pulang ke rumah saat senja',
+            bg: '#7C3AED',
+          },
+        ],
+      },
+      {
+        id: 'rodri-q5',
+        type: 'feeling-pick',
+        prompt: 'Bagaimana perasaan Rodri setelah berhasil mengantar Pipi pulang dan kembali ke rumahnya?',
+        hint: 'Lihat wajah Rodri yang tersenyum lebar karena punya sahabat baru!',
+        media: {
+          emoji: '🐱💛🐿️',
+          label: 'Rodri punya sahabat baru bernama Pipi',
+        },
+        options: [
+          {
+            id: 'feel-senang',
+            feeling: 'senang',
+            label: 'Senang & Bahagia',
+            emoji: '😊',
+            isCorrect: true,
+          },
+          {
+            id: 'feel-sedih',
+            feeling: 'sedih',
+            label: 'Sedih',
+            emoji: '😢',
+            isCorrect: false,
+          },
+          {
+            id: 'feel-takut',
+            feeling: 'takut',
+            label: 'Takut',
+            emoji: '😨',
+            isCorrect: false,
+          },
+          {
+            id: 'feel-marah',
+            feeling: 'marah',
+            label: 'Marah',
+            emoji: '😠',
+            isCorrect: false,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'kuis-langit-dan-balon-warna-warni',
+    storyId: 'langit-dan-balon-warna-warni',
+    judul: 'Kuis Langit dan Balon Warna-Warni',
+    kategori: 'Cerita Bawaan',
+    usia: '5-6 Tahun',
+    cover: '/stories/langit-balon/cover.webp',
+    coverAlt: 'Balon-balon membawa kartu terbang di langit berpelangi',
+    icon: '🎈',
+    deskripsi: 'Ayo bermain tebak warna, hitung balon, dan ingat kisah kebaikan Langit di taman desa!',
+    isGeneral: false,
+    questions: [
+      {
+        id: 'balon-q1',
+        type: 'pick-image',
+        prompt: 'Apa benda warna-warni yang dibawa Langit ke taman bermain desa?',
+        hint: 'Benda ini bisa melayang tinggi di udara jika ditiup!',
+        media: {
+          emoji: '👦🌤️',
+          label: 'Benda Kesukaan Langit',
+        },
+        options: [
+          {
+            id: 'opt-balon',
+            label: 'Balon Warna-Warni',
+            emoji: '🎈',
+            bg: '#EF4444',
+            isCorrect: true,
+          },
+          {
+            id: 'opt-sepatu',
+            label: 'Sepatu Roda',
+            emoji: '🛼',
+            bg: '#3B82F6',
+            isCorrect: false,
+          },
+          {
+            id: 'opt-payung',
+            label: 'Payung Hujan',
+            emoji: '☂️',
+            bg: '#8B5CF6',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'balon-q2',
+        type: 'color-shape',
+        prompt: 'Balon apa yang diberikan Langit untuk menghibur adiknya, Rani?',
+        hint: 'Warnanya cerah seperti buah jeruk dan matahari pagi!',
+        targetVisual: {
+          shape: 'circle',
+          colorHex: '#F97316',
+          colorName: 'Oranye Cerah',
+          emoji: '🎈🟠',
+        },
+        options: [
+          {
+            id: 'cs-oranye',
+            label: 'Bulat Oranye',
+            shape: 'circle',
+            colorHex: '#F97316',
+            pattern: 'dots',
+            isCorrect: true,
+          },
+          {
+            id: 'cs-hitam',
+            label: 'Kotak Abu Gelap',
+            shape: 'square',
+            colorHex: '#475569',
+            pattern: 'stripes',
+            isCorrect: false,
+          },
+          {
+            id: 'cs-ungu',
+            label: 'Segitiga Ungu',
+            shape: 'triangle',
+            colorHex: '#9333EA',
+            pattern: 'waves',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'balon-q3',
+        type: 'count-objects',
+        prompt: 'Hitung yuk, ada berapa balon merah yang terbang di langit biru?',
+        hint: 'Ayo hitung bersama: satu, dua, tiga, empat, lima!',
+        objectItem: {
+          emoji: '🎈',
+          name: 'Balon Terbang',
+        },
+        targetCount: 5,
+        options: [
+          { id: 'b-3', label: '3', value: 3, bg: '#0EA5E9', isCorrect: false },
+          { id: 'b-5', label: '5', value: 5, bg: '#E07030', isCorrect: true },
+          { id: 'b-7', label: '7', value: 7, bg: '#8B5CF6', isCorrect: false },
+        ],
+      },
+      {
+        id: 'balon-q4',
+        type: 'feeling-pick',
+        prompt: 'Bagaimana perasaan Rani setelah Kak Langit memberikan balon dan menggambar pelangi bersama?',
+        hint: 'Tadinya Rani sedih, lalu setelah dihibur Kak Langit ia jadi tersenyum ceria!',
+        media: {
+          emoji: '👧🌈🎈',
+          label: 'Rani menggambar pelangi bersama Kak Langit',
+        },
+        options: [
+          {
+            id: 'feel-senang',
+            feeling: 'senang',
+            label: 'Senang Sekali',
+            emoji: '😊',
+            isCorrect: true,
+          },
+          {
+            id: 'feel-sedih',
+            feeling: 'sedih',
+            label: 'Sedih',
+            emoji: '😢',
+            isCorrect: false,
+          },
+          {
+            id: 'feel-marah',
+            feeling: 'marah',
+            label: 'Marah',
+            emoji: '😠',
+            isCorrect: false,
+          },
+        ],
+      },
+    ],
+  },
+];
+
+// Kuis Umum Latihan Anak Usia Dini (Hewan, Warna, Bentuk, Angka 1-10)
+export const GENERAL_QUIZZES = [
+  {
+    id: 'latihan-kenal-hewan',
+    storyId: 'latihan-kenal-hewan',
+    judul: 'Kenali Hewan Lucu di Sekitar Kita',
+    kategori: 'Latihan Hewan',
+    usia: '4-5 Tahun',
+    cover: 'cat-magic-forest',
+    icon: '🐾',
+    deskripsi: 'Mengenal suara, tempat tinggal, dan ciri hewan lucu lewat gambar besar dan suara.',
+    isGeneral: true,
+    questions: [
+      {
+        id: 'hew-q1',
+        type: 'pick-image',
+        prompt: 'Mana hewan yang suka mengeong dan berbulu lembut?',
+        hint: 'Suaranya Meong... Meong!',
+        media: {
+          emoji: '🐾🔊',
+          label: 'Tebak Suara: "Meong!"',
+        },
+        options: [
+          { id: 'h-kucing', label: 'Kucing', emoji: '🐱', bg: '#F97316', isCorrect: true },
+          { id: 'h-bebek', label: 'Bebek', emoji: '🦆', bg: '#0EA5E9', isCorrect: false },
+          { id: 'h-katak', label: 'Katak', emoji: '🐸', bg: '#10B981', isCorrect: false },
+        ],
+      },
+      {
+        id: 'hew-q2',
+        type: 'pick-image',
+        prompt: 'Mana hewan bertelinga panjang yang suka melompat dan makan wortel?',
+        hint: 'Hewan ini melompat hap-hap di kebun wortel!',
+        media: {
+          emoji: '🥕🌿',
+          label: 'Suka Makan Wortel Oranye',
+        },
+        options: [
+          { id: 'h-kelinci', label: 'Kelinci', emoji: '🐰', bg: '#EC4899', isCorrect: true },
+          { id: 'h-singa', label: 'Singa', emoji: '🦁', bg: '#F59E0B', isCorrect: false },
+          { id: 'h-ikan', label: 'Ikan', emoji: '🐠', bg: '#10B981', isCorrect: false },
+        ],
+      },
+      {
+        id: 'hew-q3',
+        type: 'match-pairs',
+        prompt: 'Cocokkan hewan lucu di kiri dengan makanan kesukaannya di kanan!',
+        hint: 'Kelinci suka wortel, monyet suka pisang, dan lebah suka bunga.',
+        pairs: [
+          {
+            id: 'hp-1',
+            leftEmoji: '🐰',
+            leftLabel: 'Kelinci',
+            rightEmoji: '🥕',
+            rightLabel: 'Wortel',
+          },
+          {
+            id: 'hp-2',
+            leftEmoji: '🐵',
+            leftLabel: 'Monyet',
+            rightEmoji: '🍌',
+            rightLabel: 'Pisang',
+          },
+          {
+            id: 'hp-3',
+            leftEmoji: '🐝',
+            leftLabel: 'Lebah Madu',
+            rightEmoji: '🌻',
+            rightLabel: 'Bunga Matahari',
+          },
+        ],
+      },
+      {
+        id: 'hew-q4',
+        type: 'count-objects',
+        prompt: 'Ayo hitung! Ada berapa anak bebek kuning yang sedang berbaris?',
+        hint: 'Hitung dari kiri ke kanan: satu, dua, tiga, empat!',
+        objectItem: {
+          emoji: '🐥',
+          name: 'Anak Bebek',
+        },
+        targetCount: 4,
+        options: [
+          { id: 'hb-2', label: '2', value: 2, bg: '#3B82F6', isCorrect: false },
+          { id: 'hb-4', label: '4', value: 4, bg: '#E07030', isCorrect: true },
+          { id: 'hb-6', label: '6', value: 6, bg: '#8B5CF6', isCorrect: false },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'latihan-warna-ceria',
+    storyId: 'latihan-warna-ceria',
+    judul: 'Belajar Warna Ceria Pelangi',
+    kategori: 'Latihan Warna',
+    usia: '4-5 Tahun',
+    cover: 'sky-balloons',
+    icon: '🎨',
+    deskripsi: 'Kenali warna matahari, daun, laut, dan buah-buahan dengan bentuk dan pola yang jelas.',
+    isGeneral: true,
+    questions: [
+      {
+        id: 'war-q1',
+        type: 'color-shape',
+        prompt: 'Mana warna Kuning Cerah seperti pisang dan matahari pagi?',
+        hint: 'Pilih lingkaran berwarna kuning cerah dengan pola bintang!',
+        targetVisual: {
+          shape: 'circle',
+          colorHex: '#FACC15',
+          colorName: 'Kuning Matahari',
+          emoji: '☀️🍌',
+        },
+        options: [
+          {
+            id: 'w-kuning',
+            label: 'Kuning Matahari',
+            shape: 'circle',
+            colorHex: '#FACC15',
+            pattern: 'dots',
+            isCorrect: true,
+          },
+          {
+            id: 'w-biru',
+            label: 'Biru Laut',
+            shape: 'square',
+            colorHex: '#2563EB',
+            pattern: 'waves',
+            isCorrect: false,
+          },
+          {
+            id: 'w-ungu',
+            label: 'Ungu Anggur',
+            shape: 'triangle',
+            colorHex: '#9333EA',
+            pattern: 'stripes',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'war-q2',
+        type: 'color-shape',
+        prompt: 'Mana warna Hijau Segar seperti daun pohon dan rumput taman?',
+        hint: 'Pilih warna hijau daun!',
+        targetVisual: {
+          shape: 'square',
+          colorHex: '#10B981',
+          colorName: 'Hijau Daun',
+          emoji: '🌿🍏',
+        },
+        options: [
+          {
+            id: 'w-hijau',
+            label: 'Hijau Daun',
+            shape: 'square',
+            colorHex: '#10B981',
+            pattern: 'dots',
+            isCorrect: true,
+          },
+          {
+            id: 'w-merah',
+            label: 'Merah Stroberi',
+            shape: 'circle',
+            colorHex: '#EF4444',
+            pattern: 'stripes',
+            isCorrect: false,
+          },
+          {
+            id: 'w-oranye',
+            label: 'Oranye Wortel',
+            shape: 'triangle',
+            colorHex: '#F97316',
+            pattern: 'waves',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'war-q3',
+        type: 'match-pairs',
+        prompt: 'Pasangkan buah-buahan di kiri dengan warna aslinya di kanan!',
+        hint: 'Apel berwarna merah, pisang berwarna kuning, dan jeruk berwarna oranye.',
+        pairs: [
+          {
+            id: 'wp-1',
+            leftEmoji: '🍎',
+            leftLabel: 'Buah Apel',
+            rightEmoji: '🔴',
+            rightLabel: 'Merah',
+          },
+          {
+            id: 'wp-2',
+            leftEmoji: '🍌',
+            leftLabel: 'Buah Pisang',
+            rightEmoji: '🟡',
+            rightLabel: 'Kuning',
+          },
+          {
+            id: 'wp-3',
+            leftEmoji: '🍊',
+            leftLabel: 'Buah Jeruk',
+            rightEmoji: '🟠',
+            rightLabel: 'Oranye',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'latihan-bentuk-benda',
+    storyId: 'latihan-bentuk-benda',
+    judul: 'Kenali Bentuk Benda di Sekitar',
+    kategori: 'Latihan Bentuk',
+    usia: '5-6 Tahun',
+    cover: 'cat-magic-forest',
+    icon: '🔺',
+    deskripsi: 'Belajar bentuk Lingkaran, Persegi, Segitiga, dan Bintang lewat permainan seru!',
+    isGeneral: true,
+    questions: [
+      {
+        id: 'ben-q1',
+        type: 'color-shape',
+        prompt: 'Roda sepeda dan jam dinding berbentuk Lingkaran. Mana bentuk Lingkaran?',
+        hint: 'Lingkaran itu bulat penuh tanpa sudut tajam!',
+        targetVisual: {
+          shape: 'circle',
+          colorHex: '#0EA5E9',
+          colorName: 'Lingkaran Bulat',
+          emoji: '⚽🕒',
+        },
+        options: [
+          {
+            id: 'b-lingkaran',
+            label: 'Lingkaran',
+            shape: 'circle',
+            colorHex: '#0EA5E9',
+            pattern: 'dots',
+            isCorrect: true,
+          },
+          {
+            id: 'b-kotak',
+            label: 'Persegi / Kotak',
+            shape: 'square',
+            colorHex: '#F97316',
+            pattern: 'stripes',
+            isCorrect: false,
+          },
+          {
+            id: 'b-segitiga',
+            label: 'Segitiga',
+            shape: 'triangle',
+            colorHex: '#10B981',
+            pattern: 'waves',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'ben-q2',
+        type: 'color-shape',
+        prompt: 'Atap rumah dan potongan semangka berbentuk Segitiga. Mana yang Segitiga?',
+        hint: 'Segitiga punya 3 sisi dan ujung lancip di atas!',
+        targetVisual: {
+          shape: 'triangle',
+          colorHex: '#E07030',
+          colorName: 'Segitiga Tiga Sisi',
+          emoji: '⛺🍉',
+        },
+        options: [
+          {
+            id: 'b-segitiga2',
+            label: 'Segitiga',
+            shape: 'triangle',
+            colorHex: '#E07030',
+            pattern: 'dots',
+            isCorrect: true,
+          },
+          {
+            id: 'b-lingkaran2',
+            label: 'Lingkaran',
+            shape: 'circle',
+            colorHex: '#8B5CF6',
+            pattern: 'waves',
+            isCorrect: false,
+          },
+          {
+            id: 'b-kotak2',
+            label: 'Persegi',
+            shape: 'square',
+            colorHex: '#14B8A6',
+            pattern: 'stripes',
+            isCorrect: false,
+          },
+        ],
+      },
+      {
+        id: 'ben-q3',
+        type: 'color-shape',
+        prompt: 'Mana bentuk Bintang yang suka bersinar di langit malam?',
+        hint: 'Bintang punya lima sudut yang berkilau!',
+        targetVisual: {
+          shape: 'star',
+          colorHex: '#FACC15',
+          colorName: 'Bintang Lima Sudut',
+          emoji: '⭐🌟',
+        },
+        options: [
+          {
+            id: 'b-bintang',
+            label: 'Bintang',
+            shape: 'star',
+            colorHex: '#FACC15',
+            pattern: 'dots',
+            isCorrect: true,
+          },
+          {
+            id: 'b-kotak3',
+            label: 'Persegi',
+            shape: 'square',
+            colorHex: '#3B82F6',
+            pattern: 'stripes',
+            isCorrect: false,
+          },
+          {
+            id: 'b-segitiga3',
+            label: 'Segitiga',
+            shape: 'triangle',
+            colorHex: '#EC4899',
+            pattern: 'waves',
+            isCorrect: false,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'latihan-hitung-angka',
+    storyId: 'latihan-hitung-angka',
+    judul: 'Berhitung Gembira Angka 1 sampai 10',
+    kategori: 'Latihan Angka',
+    usia: '5-6 Tahun',
+    cover: 'sky-balloons',
+    icon: '🔢',
+    deskripsi: 'Latihan menghitung jumlah buah, bintang, dan hewan dari angka 1 sampai 10!',
+    isGeneral: true,
+    questions: [
+      {
+        id: 'ang-q1',
+        type: 'count-objects',
+        prompt: 'Ayo hitung! Ada berapa buah apel merah yang segar ini?',
+        hint: 'Hitung apelnya: satu, dua, tiga!',
+        objectItem: {
+          emoji: '🍎',
+          name: 'Apel Merah',
+        },
+        targetCount: 3,
+        options: [
+          { id: 'a1-1', label: '1', value: 1, bg: '#3B82F6', isCorrect: false },
+          { id: 'a1-3', label: '3', value: 3, bg: '#10B981', isCorrect: true },
+          { id: 'a1-5', label: '5', value: 5, bg: '#F59E0B', isCorrect: false },
+        ],
+      },
+      {
+        id: 'ang-q2',
+        type: 'count-objects',
+        prompt: 'Sekarang hitung ada berapa kupu-kupu cantik di taman bunga?',
+        hint: 'Hitung pelan-pelan sampai tujuh ya!',
+        objectItem: {
+          emoji: '🦋',
+          name: 'Kupu-Kupu',
+        },
+        targetCount: 7,
+        options: [
+          { id: 'a2-5', label: '5', value: 5, bg: '#0EA5E9', isCorrect: false },
+          { id: 'a2-7', label: '7', value: 7, bg: '#E07030', isCorrect: true },
+          { id: 'a2-9', label: '9', value: 9, bg: '#8B5CF6', isCorrect: false },
+        ],
+      },
+      {
+        id: 'ang-q3',
+        type: 'count-objects',
+        prompt: 'Wah banyak sekali! Ayo hitung ada berapa bintang emas semuanya?',
+        hint: 'Ada dua baris bintang, semuanya berjumlah sepuluh!',
+        objectItem: {
+          emoji: '🌟',
+          name: 'Bintang Emas',
+        },
+        targetCount: 10,
+        options: [
+          { id: 'a3-6', label: '6', value: 6, bg: '#14B8A6', isCorrect: false },
+          { id: 'a3-8', label: '8', value: 8, bg: '#F59E0B', isCorrect: false },
+          { id: 'a3-10', label: '10', value: 10, bg: '#10B981', isCorrect: true },
+        ],
+      },
+    ],
+  },
+];
+
+export const ALL_QUIZZES = [...STORY_QUIZZES, ...GENERAL_QUIZZES];
+
+export function getQuizByStoryId(storyId) {
+  if (!storyId) return STORY_QUIZZES[0];
+  const found = ALL_QUIZZES.find((q) => q.storyId === storyId || q.id === storyId);
+  return found || null;
+}
