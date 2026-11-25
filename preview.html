@@ -4697,6 +4697,112 @@ async function deleteStory(id) {
 }
 
 /**
+ * Mengambil daftar `story_id` favorit milik user dari tabel `public.favorites` Supabase
+ */
+async function fetchUserFavoritesFromSupabase(userId) {
+  if (
+    !userId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('favorites')
+      .select('story_id')
+      .eq('user_id', userId);
+
+    if (error || !Array.isArray(data)) {
+      return null;
+    }
+
+    return data
+      .map((row) => (row && row.story_id ? String(row.story_id).trim() : ''))
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Menambahkan cerita ke tabel `public.favorites` Supabase (kolom `user_id` dan `story_id`)
+ */
+async function addFavoriteToSupabase(userId, storyId) {
+  if (
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    // Cek terlebih dahulu apakah sudah ada agar aman meski belum ada unique constraint
+    const { data: existing } = await supabase
+      .from('favorites')
+      .select('story_id')
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId))
+      .limit(1);
+
+    if (Array.isArray(existing) && existing.length > 0) {
+      return true;
+    }
+
+    const { error } = await supabase
+      .from('favorites')
+      .insert({ user_id: userId, story_id: String(storyId) });
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menyimpan favorit ke public.favorites Supabase:', err);
+    return false;
+  }
+}
+
+/**
+ * Menghapus cerita dari tabel `public.favorites` Supabase berdasarkan `user_id` dan `story_id`
+ */
+async function removeFavoriteFromSupabase(userId, storyId) {
+  if (
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    const { error } = await supabase
+      .from('favorites')
+      .delete()
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId));
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menghapus favorit dari public.favorites Supabase:', err);
+    return false;
+  }
+}
+
+/**
  * Memuat awal seluruh cerita dari Supabase (dan gambar IndexedDB pada Mode Demo)
  */
 async function preloadAllStoryImages() {
@@ -6201,6 +6307,7 @@ function buildValidIdSets(userStories = [], catalogList = initialStories) {
   });
   (userStories || []).forEach((s) => {
     if (s && s.id) validStoryIds.add(s.id);
+    if (s && s.slug) validStoryIds.add(s.slug);
   });
 
   const validQuizIds = new Set();
@@ -6300,11 +6407,15 @@ function BukunaProvider({ children }) {
   }, [allSupabaseStories, user, isDemoMode]);
 
   const [favorites, setFavorites] = useState(() => {
-    const { validStoryIds } = buildValidIdSets(getMyStories());
-    const raw = readStorage(STORAGE_KEYS.FAVORITES, [
-      'petualangan-kucing-di-hutan-ajaib',
-    ]);
-    return sanitizeIdList(raw, validStoryIds);
+    if (isAuthInDemoMode()) {
+      const existing = readStorage(STORAGE_KEYS.FAVORITES, null);
+      if (Array.isArray(existing)) {
+        return existing;
+      }
+      const { validStoryIds } = buildValidIdSets(getMyStories());
+      return sanitizeIdList(['petualangan-kucing-di-hutan-ajaib'], validStoryIds);
+    }
+    return readStorage(STORAGE_KEYS.FAVORITES, []);
   });
 
   const [collections, setCollections] = useState(() => {
@@ -6396,13 +6507,46 @@ function BukunaProvider({ children }) {
     refreshCatalogStories();
   }, [refreshCatalogStories, user?.id]);
 
+  // Ambil daftar story_id favorit milik user yang login dari tabel `public.favorites` Supabase
+  // saat halaman dimuat atau di-refresh agar status favorit tersinkronisasi dari database
+  useEffect(() => {
+    let active = true;
+
+    async function syncUserFavorites() {
+      if (isDemoMode) return;
+      if (!user || !user.id || user.isDemo) {
+        if (active && !authLoading) {
+          setFavorites([]);
+        }
+        return;
+      }
+
+      const dbFavoriteIds = await fetchUserFavoritesFromSupabase(user.id);
+      if (active && Array.isArray(dbFavoriteIds)) {
+        const uniqueIds = Array.from(new Set(dbFavoriteIds));
+        setFavorites(uniqueIds);
+      }
+    }
+
+    syncUserFavorites();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, user?.isDemo, isDemoMode, authLoading]);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
-    const { validStoryIds, validQuizIds } = buildValidIdSets(myStories, catalogStories);
-    setFavorites((prev) => {
-      const next = sanitizeIdList(prev, validStoryIds);
-      return next.length === prev.length ? prev : next;
-    });
+    const { validStoryIds, validQuizIds } = buildValidIdSets(
+      allSupabaseStories,
+      catalogStories
+    );
+    if (isDemoMode) {
+      setFavorites((prev) => {
+        const next = sanitizeIdList(prev, validStoryIds);
+        return next.length === prev.length ? prev : next;
+      });
+    }
     setCollections((prev) => {
       const next = sanitizeIdList(prev, validStoryIds);
       return next.length === prev.length ? prev : next;
@@ -6415,7 +6559,7 @@ function BukunaProvider({ children }) {
       const next = sanitizeQuizResultsList(prev, validQuizIds);
       return next.length === prev.length ? prev : next;
     });
-  }, [myStories, catalogStories]);
+  }, [allSupabaseStories, catalogStories, isDemoMode]);
 
   // Preload cerita dari Supabase saat aplikasi dimuat & sinkronkan perubahan storyStorage
   useEffect(() => {
@@ -6635,6 +6779,7 @@ function BukunaProvider({ children }) {
   const logout = useCallback(async () => {
     await logoutUser();
     setUser(null);
+    setFavorites([]);
     setIsPasswordRecovery(false);
     showToast('Kamu telah keluar dari akun.');
   }, [showToast]);
@@ -6664,15 +6809,47 @@ function BukunaProvider({ children }) {
   );
 
   const toggleFavorite = useCallback(
-    (storyId) => {
+    async (storyId) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalId = (targetStory && targetStory.id) || storyId;
+      const slugId = targetStory && targetStory.slug ? targetStory.slug : null;
+
+      const isCurrentlyFav =
+        favorites.includes(storyId) ||
+        favorites.includes(canonicalId) ||
+        (slugId && favorites.includes(slugId));
+
+      // Perbarui state UI secara optimistik
       setFavorites((prev) => {
-        const exists = prev.includes(storyId);
-        const next = exists ? prev.filter((id) => id !== storyId) : [...prev, storyId];
-        showToast(exists ? 'Dihapus dari Favorit' : 'Ditambahkan ke Favorit ❤️');
-        return next;
+        if (isCurrentlyFav) {
+          return prev.filter(
+            (id) => id !== storyId && id !== canonicalId && id !== slugId
+          );
+        }
+        return Array.from(new Set([...prev, canonicalId]));
       });
+
+      showToast(
+        isCurrentlyFav ? 'Dihapus dari Favorit' : 'Ditambahkan ke Favorit ❤️'
+      );
+
+      // Jika user sedang login di Supabase, simpan atau hapus dari tabel `public.favorites`
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        if (isCurrentlyFav) {
+          await removeFavoriteFromSupabase(user.id, canonicalId);
+          if (storyId !== canonicalId) {
+            await removeFavoriteFromSupabase(user.id, storyId);
+          }
+          if (slugId && slugId !== canonicalId) {
+            await removeFavoriteFromSupabase(user.id, slugId);
+          }
+        } else {
+          await addFavoriteToSupabase(user.id, canonicalId);
+        }
+      }
     },
-    [showToast]
+    [favorites, getAnyStoryById, showToast, isDemoMode, user]
   );
 
   const toggleCollection = useCallback(
@@ -6717,7 +6894,23 @@ function BukunaProvider({ children }) {
     }));
   }, []);
 
-  const isFavorite = useCallback((storyId) => favorites.includes(storyId), [favorites]);
+  const isFavorite = useCallback(
+    (storyId) => {
+      if (!storyId) return false;
+      if (favorites.includes(storyId)) return true;
+      const found =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId);
+      if (found) {
+        return (
+          favorites.includes(found.id) ||
+          Boolean(found.slug && favorites.includes(found.slug))
+        );
+      }
+      return false;
+    },
+    [favorites, allSupabaseStories, catalogStories]
+  );
   const isInCollection = useCallback((storyId) => collections.includes(storyId), [collections]);
   const getStoryProgress = useCallback(
     (storyId) => readingHistory[storyId] || null,
@@ -10478,9 +10671,13 @@ function CollectionPage() {
  * Menampilkan grid kartu cerita yang diberi tanda favorit dan empty state ramah jika kosong.
  */
 function FavoritesPage() {
-  const { stories, favorites } = useBukuna();
+  const { stories, favorites, isFavorite } = useBukuna();
 
-  const favoriteStories = stories.filter((story) => favorites.includes(story.id));
+  const favoriteStories = stories.filter((story) =>
+    isFavorite
+      ? isFavorite(story.id)
+      : favorites.includes(story.id) || Boolean(story.slug && favorites.includes(story.slug))
+  );
 
   return (
     React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-6 pt-4 pb-8"}, React.createElement("div", {className: "flex items-center justify-between gap-3 mb-5"}, React.createElement("div", null, React.createElement(ColorfulTitle, {as: "h1", text: "Cerita Favorit", className: "font-heading font-extrabold text-2xl sm:text-3xl text-[#FFE9B0]"}), React.createElement("p", {className: "sub-section text-white/90 mt-0.5"}, favoriteStories.length > 0

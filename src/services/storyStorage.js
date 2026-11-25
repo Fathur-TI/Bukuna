@@ -1089,6 +1089,112 @@ export async function deleteStory(id) {
 }
 
 /**
+ * Mengambil daftar `story_id` favorit milik user dari tabel `public.favorites` Supabase
+ */
+export async function fetchUserFavoritesFromSupabase(userId) {
+  if (
+    !userId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('favorites')
+      .select('story_id')
+      .eq('user_id', userId);
+
+    if (error || !Array.isArray(data)) {
+      return null;
+    }
+
+    return data
+      .map((row) => (row && row.story_id ? String(row.story_id).trim() : ''))
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Menambahkan cerita ke tabel `public.favorites` Supabase (kolom `user_id` dan `story_id`)
+ */
+export async function addFavoriteToSupabase(userId, storyId) {
+  if (
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    // Cek terlebih dahulu apakah sudah ada agar aman meski belum ada unique constraint
+    const { data: existing } = await supabase
+      .from('favorites')
+      .select('story_id')
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId))
+      .limit(1);
+
+    if (Array.isArray(existing) && existing.length > 0) {
+      return true;
+    }
+
+    const { error } = await supabase
+      .from('favorites')
+      .insert({ user_id: userId, story_id: String(storyId) });
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menyimpan favorit ke public.favorites Supabase:', err);
+    return false;
+  }
+}
+
+/**
+ * Menghapus cerita dari tabel `public.favorites` Supabase berdasarkan `user_id` dan `story_id`
+ */
+export async function removeFavoriteFromSupabase(userId, storyId) {
+  if (
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    const { error } = await supabase
+      .from('favorites')
+      .delete()
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId));
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menghapus favorit dari public.favorites Supabase:', err);
+    return false;
+  }
+}
+
+/**
  * Memuat awal seluruh cerita dari Supabase (dan gambar IndexedDB pada Mode Demo)
  */
 export async function preloadAllStoryImages() {

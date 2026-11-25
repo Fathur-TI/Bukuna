@@ -380,3 +380,48 @@ CREATE POLICY "Pemilik ulasan atau Admin dapat menghapus komentar"
   FOR DELETE
   TO authenticated
   USING (auth.uid() = user_id OR public.is_bukuna_admin());
+
+
+-- =============================================================================
+-- BAGIAN 5: TABEL CERITA FAVORIT PENGGUNA (public.favorites)
+-- Menyimpan daftar story_id favorit milik masing-masing pengguna (user_id, story_id)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS public.favorites (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  story_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, story_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_favorites_user_id ON public.favorites (user_id);
+CREATE INDEX IF NOT EXISTS idx_favorites_story_id ON public.favorites (story_id);
+
+COMMENT ON TABLE public.favorites IS 'Daftar cerita favorit milik pengguna BUKUNA (user_id dan story_id).';
+
+ALTER TABLE public.favorites ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, DELETE ON TABLE public.favorites TO authenticated;
+
+DROP POLICY IF EXISTS "Pengguna dapat membaca daftar favoritnya sendiri" ON public.favorites;
+DROP POLICY IF EXISTS "Pengguna dapat menambahkan cerita ke favoritnya sendiri" ON public.favorites;
+DROP POLICY IF EXISTS "Pengguna dapat menghapus cerita dari favoritnya sendiri" ON public.favorites;
+
+CREATE POLICY "Pengguna dapat membaca daftar favoritnya sendiri"
+  ON public.favorites
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Pengguna dapat menambahkan cerita ke favoritnya sendiri"
+  ON public.favorites
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Pengguna dapat menghapus cerita dari favoritnya sendiri"
+  ON public.favorites
+  FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);

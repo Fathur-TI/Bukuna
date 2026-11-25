@@ -12,9 +12,13 @@ import { useBukuna } from '../context/BukunaContext';
  * Menampilkan grid kartu cerita yang diberi tanda favorit dan empty state ramah jika kosong.
  */
 export default function FavoritesPage() {
-  const { stories, favorites } = useBukuna();
+  const { stories, favorites, isFavorite } = useBukuna();
 
-  const favoriteStories = stories.filter((story) => favorites.includes(story.id));
+  const favoriteStories = stories.filter((story) =>
+    isFavorite
+      ? isFavorite(story.id)
+      : favorites.includes(story.id) || Boolean(story.slug && favorites.includes(story.slug))
+  );
 
   return (
     <div className="bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12">

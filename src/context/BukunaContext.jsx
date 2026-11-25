@@ -11,6 +11,9 @@ import {
   preloadAllStoryImages,
   fetchAndSyncStoriesFromSupabase,
   subscribeStoryStorage,
+  fetchUserFavoritesFromSupabase,
+  addFavoriteToSupabase,
+  removeFavoriteFromSupabase,
 } from '../services/storyStorage';
 import {
   isAuthInDemoMode,
@@ -58,6 +61,7 @@ function buildValidIdSets(userStories = [], catalogList = initialStories) {
   });
   (userStories || []).forEach((s) => {
     if (s && s.id) validStoryIds.add(s.id);
+    if (s && s.slug) validStoryIds.add(s.slug);
   });
 
   const validQuizIds = new Set();
@@ -157,11 +161,15 @@ export function BukunaProvider({ children }) {
   }, [allSupabaseStories, user, isDemoMode]);
 
   const [favorites, setFavorites] = useState(() => {
-    const { validStoryIds } = buildValidIdSets(getMyStories());
-    const raw = readStorage(STORAGE_KEYS.FAVORITES, [
-      'petualangan-kucing-di-hutan-ajaib',
-    ]);
-    return sanitizeIdList(raw, validStoryIds);
+    if (isAuthInDemoMode()) {
+      const existing = readStorage(STORAGE_KEYS.FAVORITES, null);
+      if (Array.isArray(existing)) {
+        return existing;
+      }
+      const { validStoryIds } = buildValidIdSets(getMyStories());
+      return sanitizeIdList(['petualangan-kucing-di-hutan-ajaib'], validStoryIds);
+    }
+    return readStorage(STORAGE_KEYS.FAVORITES, []);
   });
 
   const [collections, setCollections] = useState(() => {
@@ -253,13 +261,46 @@ export function BukunaProvider({ children }) {
     refreshCatalogStories();
   }, [refreshCatalogStories, user?.id]);
 
+  // Ambil daftar story_id favorit milik user yang login dari tabel `public.favorites` Supabase
+  // saat halaman dimuat atau di-refresh agar status favorit tersinkronisasi dari database
+  useEffect(() => {
+    let active = true;
+
+    async function syncUserFavorites() {
+      if (isDemoMode) return;
+      if (!user || !user.id || user.isDemo) {
+        if (active && !authLoading) {
+          setFavorites([]);
+        }
+        return;
+      }
+
+      const dbFavoriteIds = await fetchUserFavoritesFromSupabase(user.id);
+      if (active && Array.isArray(dbFavoriteIds)) {
+        const uniqueIds = Array.from(new Set(dbFavoriteIds));
+        setFavorites(uniqueIds);
+      }
+    }
+
+    syncUserFavorites();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, user?.isDemo, isDemoMode, authLoading]);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
-    const { validStoryIds, validQuizIds } = buildValidIdSets(myStories, catalogStories);
-    setFavorites((prev) => {
-      const next = sanitizeIdList(prev, validStoryIds);
-      return next.length === prev.length ? prev : next;
-    });
+    const { validStoryIds, validQuizIds } = buildValidIdSets(
+      allSupabaseStories,
+      catalogStories
+    );
+    if (isDemoMode) {
+      setFavorites((prev) => {
+        const next = sanitizeIdList(prev, validStoryIds);
+        return next.length === prev.length ? prev : next;
+      });
+    }
     setCollections((prev) => {
       const next = sanitizeIdList(prev, validStoryIds);
       return next.length === prev.length ? prev : next;
@@ -272,7 +313,7 @@ export function BukunaProvider({ children }) {
       const next = sanitizeQuizResultsList(prev, validQuizIds);
       return next.length === prev.length ? prev : next;
     });
-  }, [myStories, catalogStories]);
+  }, [allSupabaseStories, catalogStories, isDemoMode]);
 
   // Preload cerita dari Supabase saat aplikasi dimuat & sinkronkan perubahan storyStorage
   useEffect(() => {
@@ -492,6 +533,7 @@ export function BukunaProvider({ children }) {
   const logout = useCallback(async () => {
     await logoutUser();
     setUser(null);
+    setFavorites([]);
     setIsPasswordRecovery(false);
     showToast('Kamu telah keluar dari akun.');
   }, [showToast]);
@@ -521,15 +563,47 @@ export function BukunaProvider({ children }) {
   );
 
   const toggleFavorite = useCallback(
-    (storyId) => {
+    async (storyId) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalId = (targetStory && targetStory.id) || storyId;
+      const slugId = targetStory && targetStory.slug ? targetStory.slug : null;
+
+      const isCurrentlyFav =
+        favorites.includes(storyId) ||
+        favorites.includes(canonicalId) ||
+        (slugId && favorites.includes(slugId));
+
+      // Perbarui state UI secara optimistik
       setFavorites((prev) => {
-        const exists = prev.includes(storyId);
-        const next = exists ? prev.filter((id) => id !== storyId) : [...prev, storyId];
-        showToast(exists ? 'Dihapus dari Favorit' : 'Ditambahkan ke Favorit ❤️');
-        return next;
+        if (isCurrentlyFav) {
+          return prev.filter(
+            (id) => id !== storyId && id !== canonicalId && id !== slugId
+          );
+        }
+        return Array.from(new Set([...prev, canonicalId]));
       });
+
+      showToast(
+        isCurrentlyFav ? 'Dihapus dari Favorit' : 'Ditambahkan ke Favorit ❤️'
+      );
+
+      // Jika user sedang login di Supabase, simpan atau hapus dari tabel `public.favorites`
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        if (isCurrentlyFav) {
+          await removeFavoriteFromSupabase(user.id, canonicalId);
+          if (storyId !== canonicalId) {
+            await removeFavoriteFromSupabase(user.id, storyId);
+          }
+          if (slugId && slugId !== canonicalId) {
+            await removeFavoriteFromSupabase(user.id, slugId);
+          }
+        } else {
+          await addFavoriteToSupabase(user.id, canonicalId);
+        }
+      }
     },
-    [showToast]
+    [favorites, getAnyStoryById, showToast, isDemoMode, user]
   );
 
   const toggleCollection = useCallback(
@@ -574,7 +648,23 @@ export function BukunaProvider({ children }) {
     }));
   }, []);
 
-  const isFavorite = useCallback((storyId) => favorites.includes(storyId), [favorites]);
+  const isFavorite = useCallback(
+    (storyId) => {
+      if (!storyId) return false;
+      if (favorites.includes(storyId)) return true;
+      const found =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId);
+      if (found) {
+        return (
+          favorites.includes(found.id) ||
+          Boolean(found.slug && favorites.includes(found.slug))
+        );
+      }
+      return false;
+    },
+    [favorites, allSupabaseStories, catalogStories]
+  );
   const isInCollection = useCallback((storyId) => collections.includes(storyId), [collections]);
   const getStoryProgress = useCallback(
     (storyId) => readingHistory[storyId] || null,
