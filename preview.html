@@ -4803,6 +4803,285 @@ async function removeFavoriteFromSupabase(userId, storyId) {
 }
 
 /**
+ * Mengambil seluruh daftar koleksi (`public.collections`) beserta daftar `story_id` di dalamnya (`public.collection_items`)
+ * milik pengguna yang sedang login dari Supabase.
+ */
+async function fetchUserCollectionsFromSupabase(userId) {
+  if (
+    !userId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return null;
+  }
+
+  try {
+    const [colsRes, itemsRes] = await Promise.all([
+      supabase
+        .from('collections')
+        .select('id, user_id, name, description')
+        .eq('user_id', userId),
+      supabase
+        .from('collection_items')
+        .select('collection_id, user_id, story_id')
+        .eq('user_id', userId),
+    ]);
+
+    if (colsRes.error) {
+      return null;
+    }
+
+    const rawCollections = Array.isArray(colsRes.data) ? colsRes.data : [];
+    const rawItems =
+      !itemsRes.error && Array.isArray(itemsRes.data) ? itemsRes.data : [];
+
+    const itemsByCollection = {};
+    const allStoryIdsSet = new Set();
+
+    rawItems.forEach((item) => {
+      if (!item || !item.story_id) return;
+      const cid = String(item.collection_id || '');
+      const sid = String(item.story_id).trim();
+      if (!sid) return;
+      allStoryIdsSet.add(sid);
+      if (cid) {
+        if (!itemsByCollection[cid]) {
+          itemsByCollection[cid] = [];
+        }
+        if (!itemsByCollection[cid].includes(sid)) {
+          itemsByCollection[cid].push(sid);
+        }
+      }
+    });
+
+    const formattedCollections = rawCollections.map((col) => {
+      const colId = String(col.id);
+      return {
+        id: colId,
+        user_id: String(col.user_id || userId),
+        name: String(col.name || 'Koleksi Bacaan').trim(),
+        description: String(col.description || '').trim(),
+        storyIds: itemsByCollection[colId] || [],
+      };
+    });
+
+    return {
+      collectionsList: formattedCollections,
+      allCollectedStoryIds: Array.from(allStoryIdsSet),
+    };
+  } catch (err) {
+    console.warn('Gagal mengambil data koleksi dari Supabase:', err);
+    return null;
+  }
+}
+
+/**
+ * Membuat koleksi baru di tabel `public.collections` Supabase (kolom: `id`, `user_id`, `name`, `description`)
+ */
+async function createCollectionInSupabase({
+  id,
+  userId,
+  name,
+  description = '',
+}) {
+  if (
+    !userId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return null;
+  }
+
+  const colId = isValidUuid(id) ? id : generateUuid();
+  const cleanName = String(name || 'Koleksi Bacaanku').trim();
+  const cleanDesc = String(description || '').trim();
+
+  try {
+    const payload = {
+      id: colId,
+      user_id: userId,
+      name: cleanName,
+      description: cleanDesc,
+    };
+
+    const { data, error } = await supabase
+      .from('collections')
+      .insert(payload)
+      .select('id, user_id, name, description')
+      .maybeSingle();
+
+    if (error) {
+      // Fallback jika kolom id dihasilkan otomatis oleh database
+      const { id: _ignoreId, ...withoutId } = payload;
+      const { data: retryData, error: retryError } = await supabase
+        .from('collections')
+        .insert(withoutId)
+        .select('id, user_id, name, description')
+        .maybeSingle();
+
+      if (retryError) {
+        throw retryError;
+      }
+
+      const row = retryData || payload;
+      return {
+        id: String(row.id),
+        user_id: String(row.user_id || userId),
+        name: String(row.name || cleanName),
+        description: String(row.description || cleanDesc),
+        storyIds: [],
+      };
+    }
+
+    const row = data || payload;
+    return {
+      id: String(row.id),
+      user_id: String(row.user_id || userId),
+      name: String(row.name || cleanName),
+      description: String(row.description || cleanDesc),
+      storyIds: [],
+    };
+  } catch (err) {
+    console.warn('Gagal membuat koleksi baru di public.collections Supabase:', err);
+    throw err;
+  }
+}
+
+/**
+ * Menghapus koleksi dari tabel `public.collections` (beserta item terkait di `public.collection_items`)
+ */
+async function deleteCollectionFromSupabase(userId, collectionId) {
+  if (
+    !userId ||
+    !collectionId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    await supabase
+      .from('collection_items')
+      .delete()
+      .eq('collection_id', String(collectionId))
+      .eq('user_id', userId);
+
+    const { error } = await supabase
+      .from('collections')
+      .delete()
+      .eq('id', String(collectionId))
+      .eq('user_id', userId);
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menghapus koleksi dari public.collections Supabase:', err);
+    return false;
+  }
+}
+
+/**
+ * Menambahkan cerita ke dalam koleksi pada tabel `public.collection_items`
+ * (kolom: `collection_id`, `user_id`, `story_id`)
+ */
+async function addStoryToCollectionInSupabase({
+  collectionId,
+  userId,
+  storyId,
+}) {
+  if (
+    !collectionId ||
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    const { data: existing } = await supabase
+      .from('collection_items')
+      .select('story_id')
+      .eq('collection_id', String(collectionId))
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId))
+      .limit(1);
+
+    if (Array.isArray(existing) && existing.length > 0) {
+      return true;
+    }
+
+    const { error } = await supabase.from('collection_items').insert({
+      collection_id: String(collectionId),
+      user_id: userId,
+      story_id: String(storyId),
+    });
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menambahkan cerita ke public.collection_items Supabase:', err);
+    return false;
+  }
+}
+
+/**
+ * Menghapus cerita dari koleksi tertentu (atau dari seluruh koleksi user jika `collectionId` tidak diberikan)
+ * pada tabel `public.collection_items` Supabase
+ */
+async function removeStoryFromCollectionInSupabase({
+  collectionId = null,
+  userId,
+  storyId,
+}) {
+  if (
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    let query = supabase
+      .from('collection_items')
+      .delete()
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId));
+
+    if (collectionId) {
+      query = query.eq('collection_id', String(collectionId));
+    }
+
+    const { error } = await query;
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menghapus cerita dari public.collection_items Supabase:', err);
+    return false;
+  }
+}
+
+/**
  * Memuat awal seluruh cerita dari Supabase (dan gambar IndexedDB pada Mode Demo)
  */
 async function preloadAllStoryImages() {
@@ -6282,6 +6561,7 @@ const BukunaContext = createContext(null);
 const STORAGE_KEYS = {
   FAVORITES: 'bukuna_favorites_v1',
   COLLECTIONS: 'bukuna_collections_v1',
+  USER_COLLECTIONS_LIST: 'bukuna_user_collections_list_v1',
   HISTORY: 'bukuna_history_v1',
   QUIZ_RESULTS: 'bukuna_quiz_results_v1',
 };
@@ -6419,12 +6699,38 @@ function BukunaProvider({ children }) {
   });
 
   const [collections, setCollections] = useState(() => {
-    const { validStoryIds } = buildValidIdSets(getMyStories());
-    const raw = readStorage(STORAGE_KEYS.COLLECTIONS, [
-      'petualangan-kucing-di-hutan-ajaib',
-      'langit-dan-balon-warna-warni',
-    ]);
-    return sanitizeIdList(raw, validStoryIds);
+    if (isAuthInDemoMode()) {
+      const existing = readStorage(STORAGE_KEYS.COLLECTIONS, null);
+      if (Array.isArray(existing)) return existing;
+      const { validStoryIds } = buildValidIdSets(getMyStories());
+      return sanitizeIdList(
+        ['petualangan-kucing-di-hutan-ajaib', 'langit-dan-balon-warna-warni'],
+        validStoryIds
+      );
+    }
+    return readStorage(STORAGE_KEYS.COLLECTIONS, []);
+  });
+
+  // Daftar koleksi bernama milik user dari tabel `public.collections` & `public.collection_items`:
+  // [{ id, user_id, name, description, storyIds: [...] }]
+  const [userCollections, setUserCollections] = useState(() => {
+    if (isAuthInDemoMode()) {
+      const existing = readStorage(STORAGE_KEYS.USER_COLLECTIONS_LIST, null);
+      if (Array.isArray(existing) && existing.length > 0) return existing;
+      return [
+        {
+          id: 'col-demo-1',
+          user_id: 'usr-1',
+          name: 'Koleksi Bacaanku',
+          description: 'Daftar buku cerita pilihan keluarga & kelas',
+          storyIds: [
+            'petualangan-kucing-di-hutan-ajaib',
+            'langit-dan-balon-warna-warni',
+          ],
+        },
+      ];
+    }
+    return readStorage(STORAGE_KEYS.USER_COLLECTIONS_LIST, []);
   });
 
   // Riwayat bacaan: { [storyId]: { storyId, lastPage, totalPages, completed, updatedAt } }
@@ -6535,6 +6841,35 @@ function BukunaProvider({ children }) {
     };
   }, [user?.id, user?.isDemo, isDemoMode, authLoading]);
 
+  // Ambil daftar koleksi (`public.collections`) dan daftar cerita di dalamnya (`public.collection_items`)
+  // milik user yang sedang login dari Supabase saat halaman dimuat atau di-refresh
+  useEffect(() => {
+    let active = true;
+
+    async function syncUserCollections() {
+      if (isDemoMode) return;
+      if (!user || !user.id || user.isDemo) {
+        if (active && !authLoading) {
+          setUserCollections([]);
+          setCollections([]);
+        }
+        return;
+      }
+
+      const dbRes = await fetchUserCollectionsFromSupabase(user.id);
+      if (active && dbRes) {
+        setUserCollections(dbRes.collectionsList || []);
+        setCollections(dbRes.allCollectedStoryIds || []);
+      }
+    }
+
+    syncUserCollections();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, user?.isDemo, isDemoMode, authLoading]);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
     const { validStoryIds, validQuizIds } = buildValidIdSets(
@@ -6546,11 +6881,11 @@ function BukunaProvider({ children }) {
         const next = sanitizeIdList(prev, validStoryIds);
         return next.length === prev.length ? prev : next;
       });
+      setCollections((prev) => {
+        const next = sanitizeIdList(prev, validStoryIds);
+        return next.length === prev.length ? prev : next;
+      });
     }
-    setCollections((prev) => {
-      const next = sanitizeIdList(prev, validStoryIds);
-      return next.length === prev.length ? prev : next;
-    });
     setReadingHistory((prev) => {
       const next = sanitizeHistoryMap(prev, validStoryIds);
       return Object.keys(next).length === Object.keys(prev || {}).length ? prev : next;
@@ -6585,6 +6920,17 @@ function BukunaProvider({ children }) {
       // Abaikan
     }
   }, [collections]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.USER_COLLECTIONS_LIST,
+        JSON.stringify(userCollections)
+      );
+    } catch {
+      // Abaikan
+    }
+  }, [userCollections]);
 
   useEffect(() => {
     try {
@@ -6780,6 +7126,8 @@ function BukunaProvider({ children }) {
     await logoutUser();
     setUser(null);
     setFavorites([]);
+    setCollections([]);
+    setUserCollections([]);
     setIsPasswordRecovery(false);
     showToast('Kamu telah keluar dari akun.');
   }, [showToast]);
@@ -6852,16 +7200,239 @@ function BukunaProvider({ children }) {
     [favorites, getAnyStoryById, showToast, isDemoMode, user]
   );
 
-  const toggleCollection = useCallback(
-    (storyId) => {
-      setCollections((prev) => {
-        const exists = prev.includes(storyId);
-        const next = exists ? prev.filter((id) => id !== storyId) : [...prev, storyId];
-        showToast(exists ? 'Dihapus dari Koleksi' : 'Disimpan ke Koleksi 📚');
-        return next;
-      });
+  // 1. Membuat koleksi baru di tabel `public.collections` (id, user_id, name, description)
+  const createCollection = useCallback(
+    async ({ name, description = '' }) => {
+      const cleanName = String(name || '').trim();
+      if (!cleanName) {
+        throw new Error('Nama koleksi wajib diisi.');
+      }
+      const cleanDesc = String(description || '').trim();
+      const tempId = generateUuid();
+      const newCol = {
+        id: tempId,
+        user_id: (user && user.id) || 'usr-1',
+        name: cleanName,
+        description: cleanDesc,
+        storyIds: [],
+      };
+
+      setUserCollections((prev) => [...prev, newCol]);
+
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        const createdInDb = await createCollectionInSupabase({
+          id: tempId,
+          userId: user.id,
+          name: cleanName,
+          description: cleanDesc,
+        });
+        if (createdInDb && createdInDb.id) {
+          setUserCollections((prev) =>
+            prev.map((c) => (c.id === tempId ? { ...c, ...createdInDb } : c))
+          );
+          showToast(`Koleksi "${cleanName}" berhasil dibuat! 📚`);
+          return createdInDb;
+        }
+      }
+
+      showToast(`Koleksi "${cleanName}" berhasil dibuat! 📚`);
+      return newCol;
     },
-    [showToast]
+    [user, isDemoMode, showToast]
+  );
+
+  // 2. Menghapus koleksi dari tabel `public.collections` & `public.collection_items`
+  const deleteCollection = useCallback(
+    async (collectionId) => {
+      if (!collectionId) return;
+      const target = userCollections.find((c) => c.id === collectionId);
+
+      setUserCollections((prev) => {
+        const remaining = prev.filter((c) => c.id !== collectionId);
+        const remainingStoryIds = Array.from(
+          new Set(remaining.flatMap((c) => c.storyIds || []))
+        );
+        setCollections(remainingStoryIds);
+        return remaining;
+      });
+
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        await deleteCollectionFromSupabase(user.id, collectionId);
+      }
+
+      showToast(
+        target
+          ? `Koleksi "${target.name}" telah dihapus.`
+          : 'Koleksi telah dihapus.'
+      );
+    },
+    [userCollections, isDemoMode, user, showToast]
+  );
+
+  // 3. Menambahkan cerita ke koleksi tertentu di `public.collection_items`
+  const addStoryToCollection = useCallback(
+    async (collectionId, storyId) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalStoryId = (targetStory && targetStory.id) || storyId;
+
+      let activeCollectionId = collectionId;
+      let targetCol = userCollections.find((c) => c.id === activeCollectionId);
+
+      // Jika belum ada koleksi sama sekali, buat koleksi default "Koleksi Bacaanku" otomatis di Supabase
+      if (!targetCol) {
+        if (userCollections.length > 0) {
+          targetCol = userCollections[0];
+          activeCollectionId = targetCol.id;
+        } else {
+          const created = await createCollection({
+            name: 'Koleksi Bacaanku',
+            description: 'Daftar cerita favorit & pilihan keluarga',
+          });
+          activeCollectionId = created.id;
+          targetCol = created;
+        }
+      }
+
+      setUserCollections((prev) =>
+        prev.map((col) => {
+          if (col.id !== activeCollectionId) return col;
+          const nextIds = Array.from(
+            new Set([...(col.storyIds || []), canonicalStoryId])
+          );
+          return { ...col, storyIds: nextIds };
+        })
+      );
+
+      setCollections((prev) =>
+        Array.from(new Set([...prev, canonicalStoryId]))
+      );
+
+      if (!isDemoMode && user && user.id && !user.isDemo && activeCollectionId) {
+        await addStoryToCollectionInSupabase({
+          collectionId: activeCollectionId,
+          userId: user.id,
+          storyId: canonicalStoryId,
+        });
+      }
+
+      showToast(
+        `Disimpan ke koleksi "${(targetCol && targetCol.name) || 'Koleksi Bacaanku'}" 📚`
+      );
+    },
+    [
+      getAnyStoryById,
+      userCollections,
+      createCollection,
+      isDemoMode,
+      user,
+      showToast,
+    ]
+  );
+
+  // 4. Menghapus cerita dari koleksi tertentu (atau seluruh koleksi jika collectionId null) di `public.collection_items`
+  const removeStoryFromCollection = useCallback(
+    async (collectionId, storyId) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalStoryId = (targetStory && targetStory.id) || storyId;
+      const slugId = targetStory && targetStory.slug ? targetStory.slug : null;
+
+      setUserCollections((prev) => {
+        const nextCols = prev.map((col) => {
+          if (collectionId && col.id !== collectionId) return col;
+          return {
+            ...col,
+            storyIds: (col.storyIds || []).filter(
+              (id) =>
+                id !== storyId && id !== canonicalStoryId && id !== slugId
+            ),
+          };
+        });
+        const remainingIds = Array.from(
+          new Set(nextCols.flatMap((c) => c.storyIds || []))
+        );
+        setCollections(remainingIds);
+        return nextCols;
+      });
+
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        await removeStoryFromCollectionInSupabase({
+          collectionId: collectionId || null,
+          userId: user.id,
+          storyId: canonicalStoryId,
+        });
+        if (storyId !== canonicalStoryId) {
+          await removeStoryFromCollectionInSupabase({
+            collectionId: collectionId || null,
+            userId: user.id,
+            storyId,
+          });
+        }
+        if (slugId && slugId !== canonicalStoryId) {
+          await removeStoryFromCollectionInSupabase({
+            collectionId: collectionId || null,
+            userId: user.id,
+            storyId: slugId,
+          });
+        }
+      }
+
+      showToast('Cerita dihapus dari Koleksi');
+    },
+    [getAnyStoryById, isDemoMode, user, showToast]
+  );
+
+  // 5. Toggle cepat (tombol "+ Koleksi" pada Detail Cerita / Halaman Baca / Selesai Membaca)
+  const toggleCollection = useCallback(
+    async (storyId, collectionId = null) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalStoryId = (targetStory && targetStory.id) || storyId;
+      const slugId = targetStory && targetStory.slug ? targetStory.slug : null;
+
+      if (collectionId) {
+        const col = userCollections.find((c) => c.id === collectionId);
+        const existsInCol =
+          col &&
+          Array.isArray(col.storyIds) &&
+          (col.storyIds.includes(storyId) ||
+            col.storyIds.includes(canonicalStoryId) ||
+            (slugId && col.storyIds.includes(slugId)));
+
+        if (existsInCol) {
+          await removeStoryFromCollection(collectionId, canonicalStoryId);
+        } else {
+          await addStoryToCollection(collectionId, canonicalStoryId);
+        }
+        return;
+      }
+
+      const existsAnywhere =
+        collections.includes(storyId) ||
+        collections.includes(canonicalStoryId) ||
+        (slugId && collections.includes(slugId)) ||
+        userCollections.some(
+          (c) =>
+            Array.isArray(c.storyIds) &&
+            (c.storyIds.includes(storyId) ||
+              c.storyIds.includes(canonicalStoryId) ||
+              (slugId && c.storyIds.includes(slugId)))
+        );
+
+      if (existsAnywhere) {
+        await removeStoryFromCollection(null, canonicalStoryId);
+      } else {
+        await addStoryToCollection(null, canonicalStoryId);
+      }
+    },
+    [
+      getAnyStoryById,
+      userCollections,
+      collections,
+      removeStoryFromCollection,
+      addStoryToCollection,
+    ]
   );
 
   const updateReadingProgress = useCallback((storyId, pageNumber, totalPages, completed = false) => {
@@ -6911,7 +7482,43 @@ function BukunaProvider({ children }) {
     },
     [favorites, allSupabaseStories, catalogStories]
   );
-  const isInCollection = useCallback((storyId) => collections.includes(storyId), [collections]);
+  const isInCollection = useCallback(
+    (storyId, collectionId = null) => {
+      if (!storyId) return false;
+      const found =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId);
+      const canonicalId = (found && found.id) || storyId;
+      const slugId = found && found.slug ? found.slug : null;
+
+      if (collectionId) {
+        const col = userCollections.find((c) => c.id === collectionId);
+        if (!col || !Array.isArray(col.storyIds)) return false;
+        return (
+          col.storyIds.includes(storyId) ||
+          col.storyIds.includes(canonicalId) ||
+          Boolean(slugId && col.storyIds.includes(slugId))
+        );
+      }
+
+      if (
+        collections.includes(storyId) ||
+        collections.includes(canonicalId) ||
+        Boolean(slugId && collections.includes(slugId))
+      ) {
+        return true;
+      }
+
+      return userCollections.some(
+        (c) =>
+          Array.isArray(c.storyIds) &&
+          (c.storyIds.includes(storyId) ||
+            c.storyIds.includes(canonicalId) ||
+            Boolean(slugId && c.storyIds.includes(slugId)))
+      );
+    },
+    [collections, userCollections, allSupabaseStories, catalogStories]
+  );
   const getStoryProgress = useCallback(
     (storyId) => readingHistory[storyId] || null,
     [readingHistory]
@@ -7033,6 +7640,11 @@ function BukunaProvider({ children }) {
         toggleFavorite,
         isFavorite,
         collections,
+        userCollections,
+        createCollection,
+        deleteCollection,
+        addStoryToCollection,
+        removeStoryFromCollection,
         toggleCollection,
         isInCollection,
         readingHistory,
@@ -10507,10 +11119,28 @@ const READING_POLICIES = [
  */
 function CollectionPage() {
   const navigate = useNavigate();
-  const { stories, myStories, collections, showToast } = useBukuna();
+  const {
+    user,
+    stories,
+    myStories,
+    collections,
+    userCollections = [],
+    createCollection,
+    deleteCollection,
+    addStoryToCollection,
+    removeStoryFromCollection,
+    isInCollection,
+    showToast,
+  } = useBukuna();
   const [activeTab, setActiveTab] = useState('semua'); // 'semua' | 'koleksi'
   const [selectedCategory, setSelectedCategory] = useState('Semua Cerita');
   const [selectedAge, setSelectedAge] = useState('Semua');
+  const [selectedCollectionId, setSelectedCollectionId] = useState('ALL');
+  const [showCreateColForm, setShowCreateColForm] = useState(false);
+  const [newColName, setNewColName] = useState('');
+  const [newColDesc, setNewColDesc] = useState('');
+  const [isCreatingCol, setIsCreatingCol] = useState(false);
+  const [selectedStoryToAdd, setSelectedStoryToAdd] = useState('');
 
   // State Persetujuan & Tampilan Detail Aturan Membaca (Policy)
   const [policyAgreed, setPolicyAgreed] = useState(() => {
@@ -10539,12 +11169,44 @@ function CollectionPage() {
     }
   }, [availableCategories, selectedCategory]);
 
+  useEffect(() => {
+    if (
+      selectedCollectionId !== 'ALL' &&
+      !userCollections.some((c) => c.id === selectedCollectionId)
+    ) {
+      setSelectedCollectionId(
+        userCollections.length > 0 ? userCollections[0].id : 'ALL'
+      );
+    }
+  }, [userCollections, selectedCollectionId]);
+
+  const activeCollectionObj = useMemo(
+    () => userCollections.find((c) => c.id === selectedCollectionId) || null,
+    [userCollections, selectedCollectionId]
+  );
+
   const sourceStories = useMemo(() => {
     if (activeTab === 'koleksi') {
-      return stories.filter((s) => collections.includes(s.id));
+      if (selectedCollectionId !== 'ALL' && activeCollectionObj) {
+        return stories.filter((s) =>
+          isInCollection
+            ? isInCollection(s.id, activeCollectionObj.id)
+            : (activeCollectionObj.storyIds || []).includes(s.id)
+        );
+      }
+      return stories.filter((s) =>
+        isInCollection ? isInCollection(s.id) : collections.includes(s.id)
+      );
     }
     return stories;
-  }, [stories, collections, activeTab]);
+  }, [
+    stories,
+    collections,
+    activeTab,
+    selectedCollectionId,
+    activeCollectionObj,
+    isInCollection,
+  ]);
 
   const filteredStories = useMemo(() => {
     return sourceStories.filter((story) => {
@@ -10583,6 +11245,53 @@ function CollectionPage() {
     if (showToast) {
       showToast('Terima kasih telah menyetujui Aturan & Panduan Membaca BUKUNA!');
     }
+  };
+
+  const handleCreateNewCollection = async (e) => {
+    e.preventDefault();
+    const trimmedName = newColName.trim();
+    if (!trimmedName) {
+      if (showToast) showToast('Nama koleksi wajib diisi ya!');
+      return;
+    }
+    setIsCreatingCol(true);
+    try {
+      const created = await createCollection({
+        name: trimmedName,
+        description: newColDesc.trim(),
+      });
+      setNewColName('');
+      setNewColDesc('');
+      setShowCreateColForm(false);
+      if (created && created.id) {
+        setSelectedCollectionId(created.id);
+        setActiveTab('koleksi');
+      }
+    } catch (err) {
+      if (showToast) {
+        showToast((err && err.message) || 'Gagal membuat koleksi baru.');
+      }
+    } finally {
+      setIsCreatingCol(false);
+    }
+  };
+
+  const handleDeleteCollectionClick = async (col) => {
+    if (!col || !col.id) return;
+    await deleteCollection(col.id);
+    if (selectedCollectionId === col.id) {
+      setSelectedCollectionId('ALL');
+    }
+  };
+
+  const handleAddStoryToSelectedCollection = async () => {
+    if (!selectedStoryToAdd) return;
+    const targetColId =
+      selectedCollectionId !== 'ALL'
+        ? selectedCollectionId
+        : userCollections[0]?.id || null;
+    await addStoryToCollection(targetColId, selectedStoryToAdd);
+    setSelectedStoryToAdd('');
   };
 
   return (
@@ -10639,15 +11348,65 @@ function CollectionPage() {
                           })))
                     ))
                 );
-              }))), React.createElement("section", {className: "md:col-span-8 lg:col-span-9"}, filteredStories.length > 0 ? (
+              }))), React.createElement("section", {className: "md:col-span-8 lg:col-span-9 space-y-5"}, activeTab === 'koleksi' && (
+              React.createElement("div", {className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/60 rounded-3xl p-4 sm:p-6 shadow-xl space-y-4"}, React.createElement("div", {className: "flex flex-col sm:flex-row sm:items-center justify-between gap-3"}, React.createElement("div", null, React.createElement("div", {className: "flex items-center gap-2"}, React.createElement(FolderHeart, {className: "w-5 h-5 text-[#FFE9B0]"}), React.createElement("h2", {className: "font-heading font-extrabold text-lg sm:text-xl text-[#FFE9B0]"}, "Daftar Koleksi Ceritaku (", userCollections.length, ")")), React.createElement("p", {className: "sub-help text-white/85 mt-0.5"}, "Buat kelompok koleksi bacaan baru atau kelola daftar cerita di dalam tiap koleksi.")), user ? (
+                    React.createElement("button", {type: "button", onClick: () => setShowCreateColForm((prev) => !prev), className: "min-h-[42px] px-4 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer self-start sm:self-center"}, React.createElement(FolderPlus, {className: "w-4 h-4"}), React.createElement("span", null, showCreateColForm ? 'Tutup Form' : '+ Buat Koleksi Baru'))
+                  ) : (
+                    React.createElement("button", {type: "button", onClick: () => navigate('/masuk'), className: "min-h-[42px] px-4 py-2 rounded-full bg-[#FFE9B0] text-[#052625] font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md cursor-pointer self-start sm:self-center"}, React.createElement("span", null, "Masuk untuk Kelola Koleksi"))
+                  )), showCreateColForm && user && (
+                  React.createElement("form", {onSubmit: handleCreateNewCollection, className: "bg-[#062D2C]/90 border border-[#FFE9B0]/50 rounded-2xl p-4 space-y-3"}, React.createElement("div", {className: "grid grid-cols-1 sm:grid-cols-2 gap-3"}, React.createElement("div", null, React.createElement("label", {htmlFor: "new-collection-name", className: "block text-xs font-extrabold text-[#FFE9B0] mb-1"}, "Nama Koleksi *"), React.createElement("input", {id: "new-collection-name", type: "text", value: newColName, onChange: (e) => setNewColName(e.target.value), placeholder: "Contoh: Bacaan Sebelum Tidur", maxLength: 60, required: true, className: "w-full min-h-[42px] rounded-xl bg-[#005E5C] border border-[#1FAFAA]/60 px-3.5 py-2 text-sm font-bold text-white placeholder:text-white/50 focus:outline-none focus:border-[#FFE9B0]"})), React.createElement("div", null, React.createElement("label", {htmlFor: "new-collection-desc", className: "block text-xs font-extrabold text-[#FFE9B0] mb-1"}, "Deskripsi Singkat"), React.createElement("input", {id: "new-collection-desc", type: "text", value: newColDesc, onChange: (e) => setNewColDesc(e.target.value), placeholder: "Contoh: Cerita favorit anak setiap malam", maxLength: 140, className: "w-full min-h-[42px] rounded-xl bg-[#005E5C] border border-[#1FAFAA]/60 px-3.5 py-2 text-sm font-bold text-white placeholder:text-white/50 focus:outline-none focus:border-[#FFE9B0]"}))), React.createElement("div", {className: "flex items-center justify-end gap-2"}, React.createElement("button", {type: "button", onClick: () => setShowCreateColForm(false), className: "min-h-[38px] px-4 py-1.5 rounded-full bg-white/15 text-white text-xs font-bold cursor-pointer"}, "Batal"), React.createElement("button", {type: "submit", disabled: isCreatingCol, className: "min-h-[38px] px-5 py-1.5 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] font-heading font-extrabold text-xs sm:text-sm shadow-md cursor-pointer"}, isCreatingCol ? 'Menyimpan...' : 'Simpan Koleksi')))
+                ), React.createElement("div", {className: "flex flex-wrap items-center gap-2 pt-1"}, React.createElement("button", {type: "button", onClick: () => setSelectedCollectionId('ALL'), className: `min-h-[38px] px-3.5 py-1.5 rounded-full text-xs sm:text-sm font-heading font-extrabold transition-all cursor-pointer border-2 ${
+                      selectedCollectionId === 'ALL'
+                        ? 'bg-[#FFE9B0] border-[#E07030] text-[#052625] shadow-sm'
+                        : 'bg-[#062D2C]/80 border-white/20 text-white/90 hover:bg-[#062D2C]'
+                    }`}, "Semua Koleksi (", collections.length, ")"), userCollections.map((col) => {
+                    const activeCol = selectedCollectionId === col.id;
+                    const count = Array.isArray(col.storyIds)
+                      ? col.storyIds.length
+                      : 0;
+                    return (
+                      React.createElement("div", {key: col.id, className: `inline-flex items-center rounded-full border-2 transition-all ${
+                          activeCol
+                            ? 'bg-[#1FAFAA] border-[#FFE9B0] text-[#052625] shadow-sm'
+                            : 'bg-[#062D2C]/85 border-white/20 text-white'
+                        }`}, React.createElement("button", {type: "button", onClick: () => setSelectedCollectionId(col.id), className: "min-h-[38px] pl-3.5 pr-2.5 py-1.5 text-xs sm:text-sm font-heading font-extrabold cursor-pointer"}, col.name, " (", count, ")"), React.createElement("button", {type: "button", onClick: () => handleDeleteCollectionClick(col), title: `Hapus koleksi ${col.name}`, "aria-label": `Hapus koleksi ${col.name}`, className: `mr-1.5 w-7 h-7 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                            activeCol
+                              ? 'hover:bg-black/15 text-[#052625]'
+                              : 'hover:bg-red-500/30 text-red-300'
+                          }`}, React.createElement(Trash2, {className: "w-3.5 h-3.5"})))
+                    );
+                  })), user && (
+                  React.createElement("div", {className: "pt-2 border-t border-white/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3"}, React.createElement("div", {className: "text-xs sm:text-sm text-white/90"}, activeCollectionObj ? (
+                        React.createElement("div", null, React.createElement("span", {className: "font-extrabold text-[#FFE9B0]"}, activeCollectionObj.name), activeCollectionObj.description && (
+                            React.createElement("span", {className: "text-white/80"}, ' ', "— ", activeCollectionObj.description)
+                          ))
+                      ) : (
+                        React.createElement("span", null, "Menampilkan seluruh cerita dari semua koleksi milikmu.")
+                      )), React.createElement("div", {className: "flex items-center gap-2"}, React.createElement("select", {"aria-label": "Pilih cerita untuk ditambahkan ke koleksi", value: selectedStoryToAdd, onChange: (e) => setSelectedStoryToAdd(e.target.value), className: "min-h-[38px] max-w-[230px] rounded-full bg-[#062D2C] border border-[#1FAFAA]/60 px-3 py-1.5 text-xs font-bold text-white focus:outline-none focus:border-[#FFE9B0]"}, React.createElement("option", {value: ""}, "+ Pilih cerita ke koleksi..."), stories.map((st) => (
+                          React.createElement("option", {key: st.id, value: st.id}, st.judul)
+                        ))), React.createElement("button", {type: "button", onClick: handleAddStoryToSelectedCollection, disabled: !selectedStoryToAdd, className: `min-h-[38px] px-4 py-1.5 rounded-full font-heading font-extrabold text-xs transition-all ${
+                          selectedStoryToAdd
+                            ? 'bg-[#FFE9B0] hover:bg-white text-[#052625] shadow-sm cursor-pointer'
+                            : 'bg-white/10 text-white/40 cursor-not-allowed'
+                        }`}, "Tambah")))
+                ))
+            ), filteredStories.length > 0 ? (
               React.createElement("div", {className: "grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5"}, filteredStories.map((story) => (
-                  React.createElement(StoryCard, {key: story.id, story: story, showProgress: true})
+                  React.createElement("div", {key: story.id, className: "relative group/colitem"}, React.createElement(StoryCard, {story: story, showProgress: true}), activeTab === 'koleksi' && (
+                      React.createElement("button", {type: "button", onClick: () =>
+                          removeStoryFromCollection(
+                            selectedCollectionId !== 'ALL'
+                              ? selectedCollectionId
+                              : null,
+                            story.id
+                          ), title: "Hapus cerita ini dari koleksi", className: "mt-2 w-full min-h-[36px] px-3 py-1.5 rounded-full bg-[#062D2C]/90 hover:bg-red-500/80 border border-red-300/50 text-red-200 hover:text-white font-heading font-bold text-xs flex items-center justify-center gap-1.5 shadow-md transition-colors cursor-pointer"}, React.createElement(Trash2, {className: "w-3.5 h-3.5"}), React.createElement("span", null, "Hapus dari Koleksi"))
+                    ))
                 )))
             ) : (
-              React.createElement("div", {className: "bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-3xl p-8 text-center"}, React.createElement(Sparkles, {className: "w-12 h-12 text-[#FFE9B0] mx-auto mb-3"}), React.createElement("h3", {className: "font-heading text-xl font-bold text-[#FFE9B0]"}, activeTab === 'koleksi' && collections.length === 0
-                    ? 'Koleksi Tersimpan Masih Kosong'
-                    : 'Belum ada cerita untuk pilihan ini'), React.createElement("p", {className: "sub-section mt-1.5 text-white/90 max-w-md mx-auto"}, activeTab === 'koleksi' && collections.length === 0
-                    ? 'Kamu bisa menambahkan cerita ke Koleksi melalui tombol "Koleksi" pada halaman Detail Cerita atau Selesai Membaca.'
+              React.createElement("div", {className: "bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-3xl p-8 text-center"}, React.createElement(Sparkles, {className: "w-12 h-12 text-[#FFE9B0] mx-auto mb-3"}), React.createElement("h3", {className: "font-heading text-xl font-bold text-[#FFE9B0]"}, activeTab === 'koleksi'
+                    ? 'Koleksi Ini Masih Kosong'
+                    : 'Belum ada cerita untuk pilihan ini'), React.createElement("p", {className: "sub-section mt-1.5 text-white/90 max-w-md mx-auto"}, activeTab === 'koleksi'
+                    ? 'Kamu bisa memilih cerita dari menu dropdown "+ Pilih cerita ke koleksi..." di atas atau menekan tombol "+ Koleksi" pada halaman Detail Cerita.'
                     : 'Coba pilih kategori tema atau rentang usia lain untuk melihat cerita seru lainnya.'), React.createElement("button", {type: "button", onClick: () => {
                     handleReset();
                     setActiveTab('semua');
@@ -11615,16 +12374,22 @@ function StoryDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const {
+    user,
     getAnyStoryById,
     isFavorite,
     toggleFavorite,
     isInCollection,
     toggleCollection,
+    userCollections = [],
+    createCollection,
     getStoryProgress,
     hasQuizForStory,
     exportUserStory,
     showToast,
   } = useBukuna();
+
+  const [showColPicker, setShowColPicker] = useState(false);
+  const [quickColName, setQuickColName] = useState('');
 
   const story = getAnyStoryById(id);
   const fav = isFavorite(story.id);
@@ -11632,6 +12397,21 @@ function StoryDetailPage() {
   const progress = getStoryProgress(story.id);
   const isUserStory = story.sumber === 'pengguna';
   const hasQuiz = hasQuizForStory ? hasQuizForStory(story.id) : false;
+
+  const handleQuickCreateAndAdd = async (e) => {
+    e.preventDefault();
+    const trimmed = quickColName.trim();
+    if (!trimmed) return;
+    try {
+      const created = await createCollection({ name: trimmed, description: '' });
+      if (created && created.id) {
+        await toggleCollection(story.id, created.id);
+      }
+      setQuickColName('');
+    } catch {
+      // Abaikan
+    }
+  };
 
   const handleExportBackup = async () => {
     try {
@@ -11665,11 +12445,34 @@ function StoryDetailPage() {
               fav
                 ? 'bg-[#E07030] border-[#FFE9B0] text-white shadow-md'
                 : 'bg-[#005E5C]/90 border-white/20 text-white hover:bg-white/15'
-            }`}, React.createElement(Heart, {className: `w-4 h-4 ${fav ? 'fill-white' : ''}`}), React.createElement("span", null, fav ? 'Favorit ✓' : 'Favorit')), React.createElement("button", {type: "button", onClick: () => toggleCollection(story.id), "aria-label": inCol ? 'Hapus dari Koleksi' : 'Simpan ke Koleksi', className: `min-h-[44px] px-4 py-2 rounded-full font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-all cursor-pointer border-2 ${
-              inCol
-                ? 'bg-[#1FAFAA] border-[#FFE9B0] text-[#052625] shadow-md'
-                : 'bg-[#005E5C]/90 border-white/20 text-white hover:bg-white/15'
-            }`}, React.createElement(Bookmark, {className: `w-4 h-4 ${inCol ? 'fill-[#052625]' : ''}`}), React.createElement("span", null, inCol ? 'Tersimpan di Koleksi' : '+ Koleksi')))), React.createElement("main", {className: "flex-1 w-full max-w-[1000px] mx-auto px-4 sm:px-6 pt-2 pb-8"}, React.createElement("div", {className: "bg-[#005E5C]/75 backdrop-blur-md border-2 border-[#1FAFAA]/40 rounded-[32px] p-5 sm:p-8 shadow-2xl grid grid-cols-1 md:grid-cols-12 gap-6 sm:gap-8 items-center"}, React.createElement("div", {className: "md:col-span-5 lg:col-span-5"}, React.createElement("div", {className: "w-full max-w-[340px] mx-auto aspect-square rounded-[26px] overflow-hidden shadow-[0_12px_30px_rgba(0,0,0,0.4)] border-4 border-[#1FAFAA]/50 relative"}, React.createElement(StoryIllustration, {variant: story.cover, title: story.judul, alt: story.coverAlt || story.judul, showCoverTitle: true, sizeVariant: "lg", fit: "cover", loading: "eager", objectPosition: story.objectPosition || 'center center'}), isUserStory && (
+            }`}, React.createElement(Heart, {className: `w-4 h-4 ${fav ? 'fill-white' : ''}`}), React.createElement("span", null, fav ? 'Favorit ✓' : 'Favorit')), React.createElement("div", {className: "relative"}, React.createElement("button", {type: "button", onClick: () => {
+                if (userCollections.length > 1) {
+                  setShowColPicker((prev) => !prev);
+                } else {
+                  toggleCollection(story.id);
+                }
+              }, "aria-label": inCol ? 'Hapus dari Koleksi' : 'Simpan ke Koleksi', className: `min-h-[44px] px-4 py-2 rounded-full font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-all cursor-pointer border-2 ${
+                inCol
+                  ? 'bg-[#1FAFAA] border-[#FFE9B0] text-[#052625] shadow-md'
+                  : 'bg-[#005E5C]/90 border-white/20 text-white hover:bg-white/15'
+              }`}, React.createElement(Bookmark, {className: `w-4 h-4 ${inCol ? 'fill-[#052625]' : ''}`}), React.createElement("span", null, inCol ? 'Tersimpan di Koleksi' : '+ Koleksi')), showColPicker && (
+              React.createElement("div", {className: "absolute right-0 mt-2 w-72 rounded-2xl bg-[#005E5C] border-2 border-[#FFE9B0] shadow-2xl p-3 z-40 text-white space-y-2.5"}, React.createElement("div", {className: "flex items-center justify-between border-b border-white/15 pb-1.5"}, React.createElement("span", {className: "font-heading font-extrabold text-xs text-[#FFE9B0]"}, "Simpan ke Koleksi"), React.createElement("button", {type: "button", onClick: () => setShowColPicker(false), className: "text-xs font-bold text-white/75 hover:text-white cursor-pointer"}, "Tutup")), React.createElement("div", {className: "max-h-48 overflow-y-auto space-y-1.5"}, userCollections.map((col) => {
+                    const checked = isInCollection(story.id, col.id);
+                    return (
+                      React.createElement("button", {key: col.id, type: "button", onClick: () => toggleCollection(story.id, col.id), className: `w-full px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between transition-colors cursor-pointer ${
+                          checked
+                            ? 'bg-[#1FAFAA] text-[#052625]'
+                            : 'bg-[#062D2C]/80 hover:bg-[#062D2C] text-white'
+                        }`}, React.createElement("span", {className: "truncate"}, col.name), checked ? (
+                          React.createElement(Check, {className: "w-4 h-4 shrink-0"})
+                        ) : (
+                          React.createElement(Plus, {className: "w-4 h-4 shrink-0"})
+                        ))
+                    );
+                  })), user && (
+                  React.createElement("form", {onSubmit: handleQuickCreateAndAdd, className: "pt-2 border-t border-white/15 flex items-center gap-1.5"}, React.createElement("input", {type: "text", value: quickColName, onChange: (e) => setQuickColName(e.target.value), placeholder: "Buat koleksi baru...", maxLength: 50, className: "flex-1 min-w-0 rounded-xl bg-[#062D2C] border border-[#1FAFAA]/50 px-2.5 py-1.5 text-xs font-bold text-white placeholder:text-white/50 focus:outline-none focus:border-[#FFE9B0]"}), React.createElement("button", {type: "submit", className: "px-2.5 py-1.5 rounded-xl bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs cursor-pointer shrink-0"}, "+ Buat"))
+                ))
+            )))), React.createElement("main", {className: "flex-1 w-full max-w-[1000px] mx-auto px-4 sm:px-6 pt-2 pb-8"}, React.createElement("div", {className: "bg-[#005E5C]/75 backdrop-blur-md border-2 border-[#1FAFAA]/40 rounded-[32px] p-5 sm:p-8 shadow-2xl grid grid-cols-1 md:grid-cols-12 gap-6 sm:gap-8 items-center"}, React.createElement("div", {className: "md:col-span-5 lg:col-span-5"}, React.createElement("div", {className: "w-full max-w-[340px] mx-auto aspect-square rounded-[26px] overflow-hidden shadow-[0_12px_30px_rgba(0,0,0,0.4)] border-4 border-[#1FAFAA]/50 relative"}, React.createElement(StoryIllustration, {variant: story.cover, title: story.judul, alt: story.coverAlt || story.judul, showCoverTitle: true, sizeVariant: "lg", fit: "cover", loading: "eager", objectPosition: story.objectPosition || 'center center'}), isUserStory && (
                 React.createElement("div", {className: "sub-chip absolute bottom-3 left-3 px-3 py-1 rounded-full bg-[#E07030] text-white shadow-md"}, "Buatanku (", story.status === 'terbit' ? 'Terbit' : 'Draf', ")")
               ))), React.createElement("div", {className: "md:col-span-7 lg:col-span-7 flex flex-col text-left"}, React.createElement("h1", {className: "font-heading font-extrabold text-2xl sm:text-3xl lg:text-4xl text-[#FFE9B0] leading-tight"}, story.judul), React.createElement("div", {className: "sub-chip mt-3 flex flex-wrap items-center justify-between sm:justify-start gap-2 sm:gap-4 py-2.5 px-4 rounded-2xl bg-[#007A78] border border-[#1FAFAA]/40 text-[#FFE9B0]"}, React.createElement("span", null, story.kategori), React.createElement("span", {className: "text-white/40"}, "•"), React.createElement("span", null, story.usia), React.createElement("span", {className: "text-white/40"}, "•"), React.createElement("span", null, story.pages.length, " Halaman")), React.createElement("div", {className: "mt-5"}, React.createElement("h2", {className: "sub-label uppercase tracking-wider text-[#1FAFAA] mb-1.5"}, "Sinopsis Cerita"), React.createElement("p", {className: "sub-body text-white/95"}, story.sinopsis || 'Mari ikuti kisah seru dan penuh makna ini bersama-sama!')), (story.pesanMoral || story.moral_value) && (
               React.createElement("div", {className: "mt-4 rounded-2xl bg-[#007A78]/90 border border-[#FFE9B0]/40 p-3.5"}, React.createElement("span", {className: "sub-label block uppercase tracking-wider text-[#FFE9B0] mb-1"}, "✨ Pesan Moral Cerita"), React.createElement("p", {className: "sub-help text-white/95"}, story.pesanMoral || story.moral_value))

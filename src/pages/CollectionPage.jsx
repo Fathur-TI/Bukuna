@@ -14,6 +14,9 @@ import {
   CheckCircle2,
   Info,
   X,
+  Trash2,
+  FolderPlus,
+  FolderHeart,
 } from 'lucide-react';
 import Header from '../components/Header';
 import Navigation from '../components/Navigation';
@@ -60,10 +63,28 @@ const READING_POLICIES = [
  */
 export default function CollectionPage() {
   const navigate = useNavigate();
-  const { stories, myStories, collections, showToast } = useBukuna();
+  const {
+    user,
+    stories,
+    myStories,
+    collections,
+    userCollections = [],
+    createCollection,
+    deleteCollection,
+    addStoryToCollection,
+    removeStoryFromCollection,
+    isInCollection,
+    showToast,
+  } = useBukuna();
   const [activeTab, setActiveTab] = useState('semua'); // 'semua' | 'koleksi'
   const [selectedCategory, setSelectedCategory] = useState('Semua Cerita');
   const [selectedAge, setSelectedAge] = useState('Semua');
+  const [selectedCollectionId, setSelectedCollectionId] = useState('ALL');
+  const [showCreateColForm, setShowCreateColForm] = useState(false);
+  const [newColName, setNewColName] = useState('');
+  const [newColDesc, setNewColDesc] = useState('');
+  const [isCreatingCol, setIsCreatingCol] = useState(false);
+  const [selectedStoryToAdd, setSelectedStoryToAdd] = useState('');
 
   // State Persetujuan & Tampilan Detail Aturan Membaca (Policy)
   const [policyAgreed, setPolicyAgreed] = useState(() => {
@@ -92,12 +113,44 @@ export default function CollectionPage() {
     }
   }, [availableCategories, selectedCategory]);
 
+  useEffect(() => {
+    if (
+      selectedCollectionId !== 'ALL' &&
+      !userCollections.some((c) => c.id === selectedCollectionId)
+    ) {
+      setSelectedCollectionId(
+        userCollections.length > 0 ? userCollections[0].id : 'ALL'
+      );
+    }
+  }, [userCollections, selectedCollectionId]);
+
+  const activeCollectionObj = useMemo(
+    () => userCollections.find((c) => c.id === selectedCollectionId) || null,
+    [userCollections, selectedCollectionId]
+  );
+
   const sourceStories = useMemo(() => {
     if (activeTab === 'koleksi') {
-      return stories.filter((s) => collections.includes(s.id));
+      if (selectedCollectionId !== 'ALL' && activeCollectionObj) {
+        return stories.filter((s) =>
+          isInCollection
+            ? isInCollection(s.id, activeCollectionObj.id)
+            : (activeCollectionObj.storyIds || []).includes(s.id)
+        );
+      }
+      return stories.filter((s) =>
+        isInCollection ? isInCollection(s.id) : collections.includes(s.id)
+      );
     }
     return stories;
-  }, [stories, collections, activeTab]);
+  }, [
+    stories,
+    collections,
+    activeTab,
+    selectedCollectionId,
+    activeCollectionObj,
+    isInCollection,
+  ]);
 
   const filteredStories = useMemo(() => {
     return sourceStories.filter((story) => {
@@ -136,6 +189,53 @@ export default function CollectionPage() {
     if (showToast) {
       showToast('Terima kasih telah menyetujui Aturan & Panduan Membaca BUKUNA!');
     }
+  };
+
+  const handleCreateNewCollection = async (e) => {
+    e.preventDefault();
+    const trimmedName = newColName.trim();
+    if (!trimmedName) {
+      if (showToast) showToast('Nama koleksi wajib diisi ya!');
+      return;
+    }
+    setIsCreatingCol(true);
+    try {
+      const created = await createCollection({
+        name: trimmedName,
+        description: newColDesc.trim(),
+      });
+      setNewColName('');
+      setNewColDesc('');
+      setShowCreateColForm(false);
+      if (created && created.id) {
+        setSelectedCollectionId(created.id);
+        setActiveTab('koleksi');
+      }
+    } catch (err) {
+      if (showToast) {
+        showToast((err && err.message) || 'Gagal membuat koleksi baru.');
+      }
+    } finally {
+      setIsCreatingCol(false);
+    }
+  };
+
+  const handleDeleteCollectionClick = async (col) => {
+    if (!col || !col.id) return;
+    await deleteCollection(col.id);
+    if (selectedCollectionId === col.id) {
+      setSelectedCollectionId('ALL');
+    }
+  };
+
+  const handleAddStoryToSelectedCollection = async () => {
+    if (!selectedStoryToAdd) return;
+    const targetColId =
+      selectedCollectionId !== 'ALL'
+        ? selectedCollectionId
+        : userCollections[0]?.id || null;
+    await addStoryToCollection(targetColId, selectedStoryToAdd);
+    setSelectedStoryToAdd('');
   };
 
   return (
@@ -397,25 +497,253 @@ export default function CollectionPage() {
             </div>
           </aside>
 
-          {/* Grid Kartu Cerita */}
-          <section className="md:col-span-8 lg:col-span-9">
+          {/* Grid Kartu Cerita & Panel Kelola Koleksi (public.collections & public.collection_items) */}
+          <section className="md:col-span-8 lg:col-span-9 space-y-5">
+            {activeTab === 'koleksi' && (
+              <div className="bg-[#005E5C]/95 border-2 border-[#1FAFAA]/60 rounded-3xl p-4 sm:p-6 shadow-xl space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <FolderHeart className="w-5 h-5 text-[#FFE9B0]" />
+                      <h2 className="font-heading font-extrabold text-lg sm:text-xl text-[#FFE9B0]">
+                        Daftar Koleksi Ceritaku ({userCollections.length})
+                      </h2>
+                    </div>
+                    <p className="sub-help text-white/85 mt-0.5">
+                      Buat kelompok koleksi bacaan baru atau kelola daftar cerita di dalam tiap koleksi.
+                    </p>
+                  </div>
+
+                  {user ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateColForm((prev) => !prev)}
+                      className="min-h-[42px] px-4 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-all cursor-pointer self-start sm:self-center"
+                    >
+                      <FolderPlus className="w-4 h-4" />
+                      <span>
+                        {showCreateColForm ? 'Tutup Form' : '+ Buat Koleksi Baru'}
+                      </span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => navigate('/masuk')}
+                      className="min-h-[42px] px-4 py-2 rounded-full bg-[#FFE9B0] text-[#052625] font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md cursor-pointer self-start sm:self-center"
+                    >
+                      <span>Masuk untuk Kelola Koleksi</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Form Buat Koleksi Baru (public.collections: name, description) */}
+                {showCreateColForm && user && (
+                  <form
+                    onSubmit={handleCreateNewCollection}
+                    className="bg-[#062D2C]/90 border border-[#FFE9B0]/50 rounded-2xl p-4 space-y-3"
+                  >
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label
+                          htmlFor="new-collection-name"
+                          className="block text-xs font-extrabold text-[#FFE9B0] mb-1"
+                        >
+                          Nama Koleksi *
+                        </label>
+                        <input
+                          id="new-collection-name"
+                          type="text"
+                          value={newColName}
+                          onChange={(e) => setNewColName(e.target.value)}
+                          placeholder="Contoh: Bacaan Sebelum Tidur"
+                          maxLength={60}
+                          required
+                          className="w-full min-h-[42px] rounded-xl bg-[#005E5C] border border-[#1FAFAA]/60 px-3.5 py-2 text-sm font-bold text-white placeholder:text-white/50 focus:outline-none focus:border-[#FFE9B0]"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="new-collection-desc"
+                          className="block text-xs font-extrabold text-[#FFE9B0] mb-1"
+                        >
+                          Deskripsi Singkat
+                        </label>
+                        <input
+                          id="new-collection-desc"
+                          type="text"
+                          value={newColDesc}
+                          onChange={(e) => setNewColDesc(e.target.value)}
+                          placeholder="Contoh: Cerita favorit anak setiap malam"
+                          maxLength={140}
+                          className="w-full min-h-[42px] rounded-xl bg-[#005E5C] border border-[#1FAFAA]/60 px-3.5 py-2 text-sm font-bold text-white placeholder:text-white/50 focus:outline-none focus:border-[#FFE9B0]"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowCreateColForm(false)}
+                        className="min-h-[38px] px-4 py-1.5 rounded-full bg-white/15 text-white text-xs font-bold cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isCreatingCol}
+                        className="min-h-[38px] px-5 py-1.5 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] font-heading font-extrabold text-xs sm:text-sm shadow-md cursor-pointer"
+                      >
+                        {isCreatingCol ? 'Menyimpan...' : 'Simpan Koleksi'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Pil Pilihan Koleksi User */}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCollectionId('ALL')}
+                    className={`min-h-[38px] px-3.5 py-1.5 rounded-full text-xs sm:text-sm font-heading font-extrabold transition-all cursor-pointer border-2 ${
+                      selectedCollectionId === 'ALL'
+                        ? 'bg-[#FFE9B0] border-[#E07030] text-[#052625] shadow-sm'
+                        : 'bg-[#062D2C]/80 border-white/20 text-white/90 hover:bg-[#062D2C]'
+                    }`}
+                  >
+                    Semua Koleksi ({collections.length})
+                  </button>
+
+                  {userCollections.map((col) => {
+                    const activeCol = selectedCollectionId === col.id;
+                    const count = Array.isArray(col.storyIds)
+                      ? col.storyIds.length
+                      : 0;
+                    return (
+                      <div
+                        key={col.id}
+                        className={`inline-flex items-center rounded-full border-2 transition-all ${
+                          activeCol
+                            ? 'bg-[#1FAFAA] border-[#FFE9B0] text-[#052625] shadow-sm'
+                            : 'bg-[#062D2C]/85 border-white/20 text-white'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCollectionId(col.id)}
+                          className="min-h-[38px] pl-3.5 pr-2.5 py-1.5 text-xs sm:text-sm font-heading font-extrabold cursor-pointer"
+                        >
+                          {col.name} ({count})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCollectionClick(col)}
+                          title={`Hapus koleksi ${col.name}`}
+                          aria-label={`Hapus koleksi ${col.name}`}
+                          className={`mr-1.5 w-7 h-7 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                            activeCol
+                              ? 'hover:bg-black/15 text-[#052625]'
+                              : 'hover:bg-red-500/30 text-red-300'
+                          }`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Detail Koleksi Terpilih & Tambah Cerita Cepat ke Koleksi */}
+                {user && (
+                  <div className="pt-2 border-t border-white/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="text-xs sm:text-sm text-white/90">
+                      {activeCollectionObj ? (
+                        <div>
+                          <span className="font-extrabold text-[#FFE9B0]">
+                            {activeCollectionObj.name}
+                          </span>
+                          {activeCollectionObj.description && (
+                            <span className="text-white/80">
+                              {' '}
+                              — {activeCollectionObj.description}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span>
+                          Menampilkan seluruh cerita dari semua koleksi milikmu.
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <select
+                        aria-label="Pilih cerita untuk ditambahkan ke koleksi"
+                        value={selectedStoryToAdd}
+                        onChange={(e) => setSelectedStoryToAdd(e.target.value)}
+                        className="min-h-[38px] max-w-[230px] rounded-full bg-[#062D2C] border border-[#1FAFAA]/60 px-3 py-1.5 text-xs font-bold text-white focus:outline-none focus:border-[#FFE9B0]"
+                      >
+                        <option value="">+ Pilih cerita ke koleksi...</option>
+                        {stories.map((st) => (
+                          <option key={st.id} value={st.id}>
+                            {st.judul}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={handleAddStoryToSelectedCollection}
+                        disabled={!selectedStoryToAdd}
+                        className={`min-h-[38px] px-4 py-1.5 rounded-full font-heading font-extrabold text-xs transition-all ${
+                          selectedStoryToAdd
+                            ? 'bg-[#FFE9B0] hover:bg-white text-[#052625] shadow-sm cursor-pointer'
+                            : 'bg-white/10 text-white/40 cursor-not-allowed'
+                        }`}
+                      >
+                        Tambah
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {filteredStories.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
                 {filteredStories.map((story) => (
-                  <StoryCard key={story.id} story={story} showProgress={true} />
+                  <div key={story.id} className="relative group/colitem">
+                    <StoryCard story={story} showProgress={true} />
+                    {activeTab === 'koleksi' && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          removeStoryFromCollection(
+                            selectedCollectionId !== 'ALL'
+                              ? selectedCollectionId
+                              : null,
+                            story.id
+                          )
+                        }
+                        title="Hapus cerita ini dari koleksi"
+                        className="mt-2 w-full min-h-[36px] px-3 py-1.5 rounded-full bg-[#062D2C]/90 hover:bg-red-500/80 border border-red-300/50 text-red-200 hover:text-white font-heading font-bold text-xs flex items-center justify-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Hapus dari Koleksi</span>
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             ) : (
               <div className="bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-3xl p-8 text-center">
                 <Sparkles className="w-12 h-12 text-[#FFE9B0] mx-auto mb-3" />
                 <h3 className="font-heading text-xl font-bold text-[#FFE9B0]">
-                  {activeTab === 'koleksi' && collections.length === 0
-                    ? 'Koleksi Tersimpan Masih Kosong'
+                  {activeTab === 'koleksi'
+                    ? 'Koleksi Ini Masih Kosong'
                     : 'Belum ada cerita untuk pilihan ini'}
                 </h3>
                 <p className="sub-section mt-1.5 text-white/90 max-w-md mx-auto">
-                  {activeTab === 'koleksi' && collections.length === 0
-                    ? 'Kamu bisa menambahkan cerita ke Koleksi melalui tombol "Koleksi" pada halaman Detail Cerita atau Selesai Membaca.'
+                  {activeTab === 'koleksi'
+                    ? 'Kamu bisa memilih cerita dari menu dropdown "+ Pilih cerita ke koleksi..." di atas atau menekan tombol "+ Koleksi" pada halaman Detail Cerita.'
                     : 'Coba pilih kategori tema atau rentang usia lain untuk melihat cerita seru lainnya.'}
                 </p>
                 <button

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ChevronLeft,
@@ -8,6 +8,8 @@ import {
   Play,
   Edit3,
   Download,
+  Plus,
+  Check,
 } from 'lucide-react';
 import StoryIllustration from '../components/StoryIllustration';
 import Navigation from '../components/Navigation';
@@ -27,16 +29,22 @@ export default function StoryDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const {
+    user,
     getAnyStoryById,
     isFavorite,
     toggleFavorite,
     isInCollection,
     toggleCollection,
+    userCollections = [],
+    createCollection,
     getStoryProgress,
     hasQuizForStory,
     exportUserStory,
     showToast,
   } = useBukuna();
+
+  const [showColPicker, setShowColPicker] = useState(false);
+  const [quickColName, setQuickColName] = useState('');
 
   const story = getAnyStoryById(id);
   const fav = isFavorite(story.id);
@@ -44,6 +52,21 @@ export default function StoryDetailPage() {
   const progress = getStoryProgress(story.id);
   const isUserStory = story.sumber === 'pengguna';
   const hasQuiz = hasQuizForStory ? hasQuizForStory(story.id) : false;
+
+  const handleQuickCreateAndAdd = async (e) => {
+    e.preventDefault();
+    const trimmed = quickColName.trim();
+    if (!trimmed) return;
+    try {
+      const created = await createCollection({ name: trimmed, description: '' });
+      if (created && created.id) {
+        await toggleCollection(story.id, created.id);
+      }
+      setQuickColName('');
+    } catch {
+      // Abaikan
+    }
+  };
 
   const handleExportBackup = async () => {
     try {
@@ -110,19 +133,91 @@ export default function StoryDetailPage() {
             <span>{fav ? 'Favorit ✓' : 'Favorit'}</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => toggleCollection(story.id)}
-            aria-label={inCol ? 'Hapus dari Koleksi' : 'Simpan ke Koleksi'}
-            className={`min-h-[44px] px-4 py-2 rounded-full font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-all cursor-pointer border-2 ${
-              inCol
-                ? 'bg-[#1FAFAA] border-[#FFE9B0] text-[#052625] shadow-md'
-                : 'bg-[#005E5C]/90 border-white/20 text-white hover:bg-white/15'
-            }`}
-          >
-            <Bookmark className={`w-4 h-4 ${inCol ? 'fill-[#052625]' : ''}`} />
-            <span>{inCol ? 'Tersimpan di Koleksi' : '+ Koleksi'}</span>
-          </button>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                if (userCollections.length > 1) {
+                  setShowColPicker((prev) => !prev);
+                } else {
+                  toggleCollection(story.id);
+                }
+              }}
+              aria-label={inCol ? 'Hapus dari Koleksi' : 'Simpan ke Koleksi'}
+              className={`min-h-[44px] px-4 py-2 rounded-full font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-all cursor-pointer border-2 ${
+                inCol
+                  ? 'bg-[#1FAFAA] border-[#FFE9B0] text-[#052625] shadow-md'
+                  : 'bg-[#005E5C]/90 border-white/20 text-white hover:bg-white/15'
+              }`}
+            >
+              <Bookmark className={`w-4 h-4 ${inCol ? 'fill-[#052625]' : ''}`} />
+              <span>{inCol ? 'Tersimpan di Koleksi' : '+ Koleksi'}</span>
+            </button>
+
+            {showColPicker && (
+              <div className="absolute right-0 mt-2 w-72 rounded-2xl bg-[#005E5C] border-2 border-[#FFE9B0] shadow-2xl p-3 z-40 text-white space-y-2.5">
+                <div className="flex items-center justify-between border-b border-white/15 pb-1.5">
+                  <span className="font-heading font-extrabold text-xs text-[#FFE9B0]">
+                    Simpan ke Koleksi
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowColPicker(false)}
+                    className="text-xs font-bold text-white/75 hover:text-white cursor-pointer"
+                  >
+                    Tutup
+                  </button>
+                </div>
+
+                <div className="max-h-48 overflow-y-auto space-y-1.5">
+                  {userCollections.map((col) => {
+                    const checked = isInCollection(story.id, col.id);
+                    return (
+                      <button
+                        key={col.id}
+                        type="button"
+                        onClick={() => toggleCollection(story.id, col.id)}
+                        className={`w-full px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between transition-colors cursor-pointer ${
+                          checked
+                            ? 'bg-[#1FAFAA] text-[#052625]'
+                            : 'bg-[#062D2C]/80 hover:bg-[#062D2C] text-white'
+                        }`}
+                      >
+                        <span className="truncate">{col.name}</span>
+                        {checked ? (
+                          <Check className="w-4 h-4 shrink-0" />
+                        ) : (
+                          <Plus className="w-4 h-4 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {user && (
+                  <form
+                    onSubmit={handleQuickCreateAndAdd}
+                    className="pt-2 border-t border-white/15 flex items-center gap-1.5"
+                  >
+                    <input
+                      type="text"
+                      value={quickColName}
+                      onChange={(e) => setQuickColName(e.target.value)}
+                      placeholder="Buat koleksi baru..."
+                      maxLength={50}
+                      className="flex-1 min-w-0 rounded-xl bg-[#062D2C] border border-[#1FAFAA]/50 px-2.5 py-1.5 text-xs font-bold text-white placeholder:text-white/50 focus:outline-none focus:border-[#FFE9B0]"
+                    />
+                    <button
+                      type="submit"
+                      className="px-2.5 py-1.5 rounded-xl bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs cursor-pointer shrink-0"
+                    >
+                      + Buat
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 

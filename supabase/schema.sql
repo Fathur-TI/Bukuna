@@ -425,3 +425,96 @@ CREATE POLICY "Pengguna dapat menghapus cerita dari favoritnya sendiri"
   FOR DELETE
   TO authenticated
   USING (auth.uid() = user_id);
+
+
+-- =============================================================================
+-- BAGIAN 6: TABEL KOLEKSI CERITA PENGGUNA (public.collections & public.collection_items)
+-- - public.collections: id, user_id, name, description
+-- - public.collection_items: collection_id, user_id, story_id
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS public.collections (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collections_user_id ON public.collections (user_id);
+
+COMMENT ON TABLE public.collections IS 'Daftar koleksi cerita yang dibuat oleh pengguna BUKUNA.';
+
+ALTER TABLE public.collections ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.collections TO authenticated;
+
+DROP POLICY IF EXISTS "Pengguna dapat membaca koleksinya sendiri" ON public.collections;
+DROP POLICY IF EXISTS "Pengguna dapat membuat koleksinya sendiri" ON public.collections;
+DROP POLICY IF EXISTS "Pengguna dapat mengubah koleksinya sendiri" ON public.collections;
+DROP POLICY IF EXISTS "Pengguna dapat menghapus koleksinya sendiri" ON public.collections;
+
+CREATE POLICY "Pengguna dapat membaca koleksinya sendiri"
+  ON public.collections
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Pengguna dapat membuat koleksinya sendiri"
+  ON public.collections
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Pengguna dapat mengubah koleksinya sendiri"
+  ON public.collections
+  FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Pengguna dapat menghapus koleksinya sendiri"
+  ON public.collections
+  FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS public.collection_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  collection_id UUID NOT NULL REFERENCES public.collections(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  story_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (collection_id, story_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_items_collection_id ON public.collection_items (collection_id);
+CREATE INDEX IF NOT EXISTS idx_collection_items_user_id ON public.collection_items (user_id);
+
+COMMENT ON TABLE public.collection_items IS 'Daftar cerita (story_id) di dalam masing-masing koleksi pengguna BUKUNA.';
+
+ALTER TABLE public.collection_items ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, DELETE ON TABLE public.collection_items TO authenticated;
+
+DROP POLICY IF EXISTS "Pengguna dapat membaca item koleksinya sendiri" ON public.collection_items;
+DROP POLICY IF EXISTS "Pengguna dapat menambah cerita ke koleksinya sendiri" ON public.collection_items;
+DROP POLICY IF EXISTS "Pengguna dapat menghapus cerita dari koleksinya sendiri" ON public.collection_items;
+
+CREATE POLICY "Pengguna dapat membaca item koleksinya sendiri"
+  ON public.collection_items
+  FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Pengguna dapat menambah cerita ke koleksinya sendiri"
+  ON public.collection_items
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Pengguna dapat menghapus cerita dari koleksinya sendiri"
+  ON public.collection_items
+  FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);

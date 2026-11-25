@@ -1195,6 +1195,285 @@ export async function removeFavoriteFromSupabase(userId, storyId) {
 }
 
 /**
+ * Mengambil seluruh daftar koleksi (`public.collections`) beserta daftar `story_id` di dalamnya (`public.collection_items`)
+ * milik pengguna yang sedang login dari Supabase.
+ */
+export async function fetchUserCollectionsFromSupabase(userId) {
+  if (
+    !userId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return null;
+  }
+
+  try {
+    const [colsRes, itemsRes] = await Promise.all([
+      supabase
+        .from('collections')
+        .select('id, user_id, name, description')
+        .eq('user_id', userId),
+      supabase
+        .from('collection_items')
+        .select('collection_id, user_id, story_id')
+        .eq('user_id', userId),
+    ]);
+
+    if (colsRes.error) {
+      return null;
+    }
+
+    const rawCollections = Array.isArray(colsRes.data) ? colsRes.data : [];
+    const rawItems =
+      !itemsRes.error && Array.isArray(itemsRes.data) ? itemsRes.data : [];
+
+    const itemsByCollection = {};
+    const allStoryIdsSet = new Set();
+
+    rawItems.forEach((item) => {
+      if (!item || !item.story_id) return;
+      const cid = String(item.collection_id || '');
+      const sid = String(item.story_id).trim();
+      if (!sid) return;
+      allStoryIdsSet.add(sid);
+      if (cid) {
+        if (!itemsByCollection[cid]) {
+          itemsByCollection[cid] = [];
+        }
+        if (!itemsByCollection[cid].includes(sid)) {
+          itemsByCollection[cid].push(sid);
+        }
+      }
+    });
+
+    const formattedCollections = rawCollections.map((col) => {
+      const colId = String(col.id);
+      return {
+        id: colId,
+        user_id: String(col.user_id || userId),
+        name: String(col.name || 'Koleksi Bacaan').trim(),
+        description: String(col.description || '').trim(),
+        storyIds: itemsByCollection[colId] || [],
+      };
+    });
+
+    return {
+      collectionsList: formattedCollections,
+      allCollectedStoryIds: Array.from(allStoryIdsSet),
+    };
+  } catch (err) {
+    console.warn('Gagal mengambil data koleksi dari Supabase:', err);
+    return null;
+  }
+}
+
+/**
+ * Membuat koleksi baru di tabel `public.collections` Supabase (kolom: `id`, `user_id`, `name`, `description`)
+ */
+export async function createCollectionInSupabase({
+  id,
+  userId,
+  name,
+  description = '',
+}) {
+  if (
+    !userId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return null;
+  }
+
+  const colId = isValidUuid(id) ? id : generateUuid();
+  const cleanName = String(name || 'Koleksi Bacaanku').trim();
+  const cleanDesc = String(description || '').trim();
+
+  try {
+    const payload = {
+      id: colId,
+      user_id: userId,
+      name: cleanName,
+      description: cleanDesc,
+    };
+
+    const { data, error } = await supabase
+      .from('collections')
+      .insert(payload)
+      .select('id, user_id, name, description')
+      .maybeSingle();
+
+    if (error) {
+      // Fallback jika kolom id dihasilkan otomatis oleh database
+      const { id: _ignoreId, ...withoutId } = payload;
+      const { data: retryData, error: retryError } = await supabase
+        .from('collections')
+        .insert(withoutId)
+        .select('id, user_id, name, description')
+        .maybeSingle();
+
+      if (retryError) {
+        throw retryError;
+      }
+
+      const row = retryData || payload;
+      return {
+        id: String(row.id),
+        user_id: String(row.user_id || userId),
+        name: String(row.name || cleanName),
+        description: String(row.description || cleanDesc),
+        storyIds: [],
+      };
+    }
+
+    const row = data || payload;
+    return {
+      id: String(row.id),
+      user_id: String(row.user_id || userId),
+      name: String(row.name || cleanName),
+      description: String(row.description || cleanDesc),
+      storyIds: [],
+    };
+  } catch (err) {
+    console.warn('Gagal membuat koleksi baru di public.collections Supabase:', err);
+    throw err;
+  }
+}
+
+/**
+ * Menghapus koleksi dari tabel `public.collections` (beserta item terkait di `public.collection_items`)
+ */
+export async function deleteCollectionFromSupabase(userId, collectionId) {
+  if (
+    !userId ||
+    !collectionId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    await supabase
+      .from('collection_items')
+      .delete()
+      .eq('collection_id', String(collectionId))
+      .eq('user_id', userId);
+
+    const { error } = await supabase
+      .from('collections')
+      .delete()
+      .eq('id', String(collectionId))
+      .eq('user_id', userId);
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menghapus koleksi dari public.collections Supabase:', err);
+    return false;
+  }
+}
+
+/**
+ * Menambahkan cerita ke dalam koleksi pada tabel `public.collection_items`
+ * (kolom: `collection_id`, `user_id`, `story_id`)
+ */
+export async function addStoryToCollectionInSupabase({
+  collectionId,
+  userId,
+  storyId,
+}) {
+  if (
+    !collectionId ||
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    const { data: existing } = await supabase
+      .from('collection_items')
+      .select('story_id')
+      .eq('collection_id', String(collectionId))
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId))
+      .limit(1);
+
+    if (Array.isArray(existing) && existing.length > 0) {
+      return true;
+    }
+
+    const { error } = await supabase.from('collection_items').insert({
+      collection_id: String(collectionId),
+      user_id: userId,
+      story_id: String(storyId),
+    });
+
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menambahkan cerita ke public.collection_items Supabase:', err);
+    return false;
+  }
+}
+
+/**
+ * Menghapus cerita dari koleksi tertentu (atau dari seluruh koleksi user jika `collectionId` tidak diberikan)
+ * pada tabel `public.collection_items` Supabase
+ */
+export async function removeStoryFromCollectionInSupabase({
+  collectionId = null,
+  userId,
+  storyId,
+}) {
+  if (
+    !userId ||
+    !storyId ||
+    !isValidUuid(userId) ||
+    isAuthInDemoMode() ||
+    !isSupabaseConfigured ||
+    !supabase
+  ) {
+    return false;
+  }
+
+  try {
+    let query = supabase
+      .from('collection_items')
+      .delete()
+      .eq('user_id', userId)
+      .eq('story_id', String(storyId));
+
+    if (collectionId) {
+      query = query.eq('collection_id', String(collectionId));
+    }
+
+    const { error } = await query;
+    if (error) {
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Gagal menghapus cerita dari public.collection_items Supabase:', err);
+    return false;
+  }
+}
+
+/**
  * Memuat awal seluruh cerita dari Supabase (dan gambar IndexedDB pada Mode Demo)
  */
 export async function preloadAllStoryImages() {

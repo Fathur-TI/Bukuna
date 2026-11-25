@@ -14,6 +14,12 @@ import {
   fetchUserFavoritesFromSupabase,
   addFavoriteToSupabase,
   removeFavoriteFromSupabase,
+  fetchUserCollectionsFromSupabase,
+  createCollectionInSupabase,
+  deleteCollectionFromSupabase,
+  addStoryToCollectionInSupabase,
+  removeStoryFromCollectionInSupabase,
+  generateUuid,
 } from '../services/storyStorage';
 import {
   isAuthInDemoMode,
@@ -36,6 +42,7 @@ const BukunaContext = createContext(null);
 const STORAGE_KEYS = {
   FAVORITES: 'bukuna_favorites_v1',
   COLLECTIONS: 'bukuna_collections_v1',
+  USER_COLLECTIONS_LIST: 'bukuna_user_collections_list_v1',
   HISTORY: 'bukuna_history_v1',
   QUIZ_RESULTS: 'bukuna_quiz_results_v1',
 };
@@ -173,12 +180,38 @@ export function BukunaProvider({ children }) {
   });
 
   const [collections, setCollections] = useState(() => {
-    const { validStoryIds } = buildValidIdSets(getMyStories());
-    const raw = readStorage(STORAGE_KEYS.COLLECTIONS, [
-      'petualangan-kucing-di-hutan-ajaib',
-      'langit-dan-balon-warna-warni',
-    ]);
-    return sanitizeIdList(raw, validStoryIds);
+    if (isAuthInDemoMode()) {
+      const existing = readStorage(STORAGE_KEYS.COLLECTIONS, null);
+      if (Array.isArray(existing)) return existing;
+      const { validStoryIds } = buildValidIdSets(getMyStories());
+      return sanitizeIdList(
+        ['petualangan-kucing-di-hutan-ajaib', 'langit-dan-balon-warna-warni'],
+        validStoryIds
+      );
+    }
+    return readStorage(STORAGE_KEYS.COLLECTIONS, []);
+  });
+
+  // Daftar koleksi bernama milik user dari tabel `public.collections` & `public.collection_items`:
+  // [{ id, user_id, name, description, storyIds: [...] }]
+  const [userCollections, setUserCollections] = useState(() => {
+    if (isAuthInDemoMode()) {
+      const existing = readStorage(STORAGE_KEYS.USER_COLLECTIONS_LIST, null);
+      if (Array.isArray(existing) && existing.length > 0) return existing;
+      return [
+        {
+          id: 'col-demo-1',
+          user_id: 'usr-1',
+          name: 'Koleksi Bacaanku',
+          description: 'Daftar buku cerita pilihan keluarga & kelas',
+          storyIds: [
+            'petualangan-kucing-di-hutan-ajaib',
+            'langit-dan-balon-warna-warni',
+          ],
+        },
+      ];
+    }
+    return readStorage(STORAGE_KEYS.USER_COLLECTIONS_LIST, []);
   });
 
   // Riwayat bacaan: { [storyId]: { storyId, lastPage, totalPages, completed, updatedAt } }
@@ -289,6 +322,35 @@ export function BukunaProvider({ children }) {
     };
   }, [user?.id, user?.isDemo, isDemoMode, authLoading]);
 
+  // Ambil daftar koleksi (`public.collections`) dan daftar cerita di dalamnya (`public.collection_items`)
+  // milik user yang sedang login dari Supabase saat halaman dimuat atau di-refresh
+  useEffect(() => {
+    let active = true;
+
+    async function syncUserCollections() {
+      if (isDemoMode) return;
+      if (!user || !user.id || user.isDemo) {
+        if (active && !authLoading) {
+          setUserCollections([]);
+          setCollections([]);
+        }
+        return;
+      }
+
+      const dbRes = await fetchUserCollectionsFromSupabase(user.id);
+      if (active && dbRes) {
+        setUserCollections(dbRes.collectionsList || []);
+        setCollections(dbRes.allCollectedStoryIds || []);
+      }
+    }
+
+    syncUserCollections();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id, user?.isDemo, isDemoMode, authLoading]);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
     const { validStoryIds, validQuizIds } = buildValidIdSets(
@@ -300,11 +362,11 @@ export function BukunaProvider({ children }) {
         const next = sanitizeIdList(prev, validStoryIds);
         return next.length === prev.length ? prev : next;
       });
+      setCollections((prev) => {
+        const next = sanitizeIdList(prev, validStoryIds);
+        return next.length === prev.length ? prev : next;
+      });
     }
-    setCollections((prev) => {
-      const next = sanitizeIdList(prev, validStoryIds);
-      return next.length === prev.length ? prev : next;
-    });
     setReadingHistory((prev) => {
       const next = sanitizeHistoryMap(prev, validStoryIds);
       return Object.keys(next).length === Object.keys(prev || {}).length ? prev : next;
@@ -339,6 +401,17 @@ export function BukunaProvider({ children }) {
       // Abaikan
     }
   }, [collections]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.USER_COLLECTIONS_LIST,
+        JSON.stringify(userCollections)
+      );
+    } catch {
+      // Abaikan
+    }
+  }, [userCollections]);
 
   useEffect(() => {
     try {
@@ -534,6 +607,8 @@ export function BukunaProvider({ children }) {
     await logoutUser();
     setUser(null);
     setFavorites([]);
+    setCollections([]);
+    setUserCollections([]);
     setIsPasswordRecovery(false);
     showToast('Kamu telah keluar dari akun.');
   }, [showToast]);
@@ -606,16 +681,239 @@ export function BukunaProvider({ children }) {
     [favorites, getAnyStoryById, showToast, isDemoMode, user]
   );
 
-  const toggleCollection = useCallback(
-    (storyId) => {
-      setCollections((prev) => {
-        const exists = prev.includes(storyId);
-        const next = exists ? prev.filter((id) => id !== storyId) : [...prev, storyId];
-        showToast(exists ? 'Dihapus dari Koleksi' : 'Disimpan ke Koleksi 📚');
-        return next;
-      });
+  // 1. Membuat koleksi baru di tabel `public.collections` (id, user_id, name, description)
+  const createCollection = useCallback(
+    async ({ name, description = '' }) => {
+      const cleanName = String(name || '').trim();
+      if (!cleanName) {
+        throw new Error('Nama koleksi wajib diisi.');
+      }
+      const cleanDesc = String(description || '').trim();
+      const tempId = generateUuid();
+      const newCol = {
+        id: tempId,
+        user_id: (user && user.id) || 'usr-1',
+        name: cleanName,
+        description: cleanDesc,
+        storyIds: [],
+      };
+
+      setUserCollections((prev) => [...prev, newCol]);
+
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        const createdInDb = await createCollectionInSupabase({
+          id: tempId,
+          userId: user.id,
+          name: cleanName,
+          description: cleanDesc,
+        });
+        if (createdInDb && createdInDb.id) {
+          setUserCollections((prev) =>
+            prev.map((c) => (c.id === tempId ? { ...c, ...createdInDb } : c))
+          );
+          showToast(`Koleksi "${cleanName}" berhasil dibuat! 📚`);
+          return createdInDb;
+        }
+      }
+
+      showToast(`Koleksi "${cleanName}" berhasil dibuat! 📚`);
+      return newCol;
     },
-    [showToast]
+    [user, isDemoMode, showToast]
+  );
+
+  // 2. Menghapus koleksi dari tabel `public.collections` & `public.collection_items`
+  const deleteCollection = useCallback(
+    async (collectionId) => {
+      if (!collectionId) return;
+      const target = userCollections.find((c) => c.id === collectionId);
+
+      setUserCollections((prev) => {
+        const remaining = prev.filter((c) => c.id !== collectionId);
+        const remainingStoryIds = Array.from(
+          new Set(remaining.flatMap((c) => c.storyIds || []))
+        );
+        setCollections(remainingStoryIds);
+        return remaining;
+      });
+
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        await deleteCollectionFromSupabase(user.id, collectionId);
+      }
+
+      showToast(
+        target
+          ? `Koleksi "${target.name}" telah dihapus.`
+          : 'Koleksi telah dihapus.'
+      );
+    },
+    [userCollections, isDemoMode, user, showToast]
+  );
+
+  // 3. Menambahkan cerita ke koleksi tertentu di `public.collection_items`
+  const addStoryToCollection = useCallback(
+    async (collectionId, storyId) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalStoryId = (targetStory && targetStory.id) || storyId;
+
+      let activeCollectionId = collectionId;
+      let targetCol = userCollections.find((c) => c.id === activeCollectionId);
+
+      // Jika belum ada koleksi sama sekali, buat koleksi default "Koleksi Bacaanku" otomatis di Supabase
+      if (!targetCol) {
+        if (userCollections.length > 0) {
+          targetCol = userCollections[0];
+          activeCollectionId = targetCol.id;
+        } else {
+          const created = await createCollection({
+            name: 'Koleksi Bacaanku',
+            description: 'Daftar cerita favorit & pilihan keluarga',
+          });
+          activeCollectionId = created.id;
+          targetCol = created;
+        }
+      }
+
+      setUserCollections((prev) =>
+        prev.map((col) => {
+          if (col.id !== activeCollectionId) return col;
+          const nextIds = Array.from(
+            new Set([...(col.storyIds || []), canonicalStoryId])
+          );
+          return { ...col, storyIds: nextIds };
+        })
+      );
+
+      setCollections((prev) =>
+        Array.from(new Set([...prev, canonicalStoryId]))
+      );
+
+      if (!isDemoMode && user && user.id && !user.isDemo && activeCollectionId) {
+        await addStoryToCollectionInSupabase({
+          collectionId: activeCollectionId,
+          userId: user.id,
+          storyId: canonicalStoryId,
+        });
+      }
+
+      showToast(
+        `Disimpan ke koleksi "${(targetCol && targetCol.name) || 'Koleksi Bacaanku'}" 📚`
+      );
+    },
+    [
+      getAnyStoryById,
+      userCollections,
+      createCollection,
+      isDemoMode,
+      user,
+      showToast,
+    ]
+  );
+
+  // 4. Menghapus cerita dari koleksi tertentu (atau seluruh koleksi jika collectionId null) di `public.collection_items`
+  const removeStoryFromCollection = useCallback(
+    async (collectionId, storyId) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalStoryId = (targetStory && targetStory.id) || storyId;
+      const slugId = targetStory && targetStory.slug ? targetStory.slug : null;
+
+      setUserCollections((prev) => {
+        const nextCols = prev.map((col) => {
+          if (collectionId && col.id !== collectionId) return col;
+          return {
+            ...col,
+            storyIds: (col.storyIds || []).filter(
+              (id) =>
+                id !== storyId && id !== canonicalStoryId && id !== slugId
+            ),
+          };
+        });
+        const remainingIds = Array.from(
+          new Set(nextCols.flatMap((c) => c.storyIds || []))
+        );
+        setCollections(remainingIds);
+        return nextCols;
+      });
+
+      if (!isDemoMode && user && user.id && !user.isDemo) {
+        await removeStoryFromCollectionInSupabase({
+          collectionId: collectionId || null,
+          userId: user.id,
+          storyId: canonicalStoryId,
+        });
+        if (storyId !== canonicalStoryId) {
+          await removeStoryFromCollectionInSupabase({
+            collectionId: collectionId || null,
+            userId: user.id,
+            storyId,
+          });
+        }
+        if (slugId && slugId !== canonicalStoryId) {
+          await removeStoryFromCollectionInSupabase({
+            collectionId: collectionId || null,
+            userId: user.id,
+            storyId: slugId,
+          });
+        }
+      }
+
+      showToast('Cerita dihapus dari Koleksi');
+    },
+    [getAnyStoryById, isDemoMode, user, showToast]
+  );
+
+  // 5. Toggle cepat (tombol "+ Koleksi" pada Detail Cerita / Halaman Baca / Selesai Membaca)
+  const toggleCollection = useCallback(
+    async (storyId, collectionId = null) => {
+      if (!storyId) return;
+      const targetStory = getAnyStoryById(storyId);
+      const canonicalStoryId = (targetStory && targetStory.id) || storyId;
+      const slugId = targetStory && targetStory.slug ? targetStory.slug : null;
+
+      if (collectionId) {
+        const col = userCollections.find((c) => c.id === collectionId);
+        const existsInCol =
+          col &&
+          Array.isArray(col.storyIds) &&
+          (col.storyIds.includes(storyId) ||
+            col.storyIds.includes(canonicalStoryId) ||
+            (slugId && col.storyIds.includes(slugId)));
+
+        if (existsInCol) {
+          await removeStoryFromCollection(collectionId, canonicalStoryId);
+        } else {
+          await addStoryToCollection(collectionId, canonicalStoryId);
+        }
+        return;
+      }
+
+      const existsAnywhere =
+        collections.includes(storyId) ||
+        collections.includes(canonicalStoryId) ||
+        (slugId && collections.includes(slugId)) ||
+        userCollections.some(
+          (c) =>
+            Array.isArray(c.storyIds) &&
+            (c.storyIds.includes(storyId) ||
+              c.storyIds.includes(canonicalStoryId) ||
+              (slugId && c.storyIds.includes(slugId)))
+        );
+
+      if (existsAnywhere) {
+        await removeStoryFromCollection(null, canonicalStoryId);
+      } else {
+        await addStoryToCollection(null, canonicalStoryId);
+      }
+    },
+    [
+      getAnyStoryById,
+      userCollections,
+      collections,
+      removeStoryFromCollection,
+      addStoryToCollection,
+    ]
   );
 
   const updateReadingProgress = useCallback((storyId, pageNumber, totalPages, completed = false) => {
@@ -665,7 +963,43 @@ export function BukunaProvider({ children }) {
     },
     [favorites, allSupabaseStories, catalogStories]
   );
-  const isInCollection = useCallback((storyId) => collections.includes(storyId), [collections]);
+  const isInCollection = useCallback(
+    (storyId, collectionId = null) => {
+      if (!storyId) return false;
+      const found =
+        allSupabaseStories.find((s) => s.id === storyId || s.slug === storyId) ||
+        (catalogStories || []).find((s) => s.id === storyId || s.slug === storyId);
+      const canonicalId = (found && found.id) || storyId;
+      const slugId = found && found.slug ? found.slug : null;
+
+      if (collectionId) {
+        const col = userCollections.find((c) => c.id === collectionId);
+        if (!col || !Array.isArray(col.storyIds)) return false;
+        return (
+          col.storyIds.includes(storyId) ||
+          col.storyIds.includes(canonicalId) ||
+          Boolean(slugId && col.storyIds.includes(slugId))
+        );
+      }
+
+      if (
+        collections.includes(storyId) ||
+        collections.includes(canonicalId) ||
+        Boolean(slugId && collections.includes(slugId))
+      ) {
+        return true;
+      }
+
+      return userCollections.some(
+        (c) =>
+          Array.isArray(c.storyIds) &&
+          (c.storyIds.includes(storyId) ||
+            c.storyIds.includes(canonicalId) ||
+            Boolean(slugId && c.storyIds.includes(slugId)))
+      );
+    },
+    [collections, userCollections, allSupabaseStories, catalogStories]
+  );
   const getStoryProgress = useCallback(
     (storyId) => readingHistory[storyId] || null,
     [readingHistory]
@@ -788,6 +1122,11 @@ export function BukunaProvider({ children }) {
         toggleFavorite,
         isFavorite,
         collections,
+        userCollections,
+        createCollection,
+        deleteCollection,
+        addStoryToCollection,
+        removeStoryFromCollection,
         toggleCollection,
         isInCollection,
         readingHistory,
