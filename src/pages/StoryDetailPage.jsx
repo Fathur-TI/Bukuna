@@ -174,6 +174,18 @@ export default function StoryDetailPage() {
               </p>
             </div>
 
+            {/* Pesan Moral Cerita (jika tersedia dari cerita yang dikelola Admin) */}
+            {(story.pesanMoral || story.moral_value) && (
+              <div className="mt-4 rounded-2xl bg-[#007A78]/90 border border-[#FFE9B0]/40 p-3.5">
+                <span className="sub-label block uppercase tracking-wider text-[#FFE9B0] mb-1">
+                  ✨ Pesan Moral Cerita
+                </span>
+                <p className="sub-help text-white/95">
+                  {story.pesanMoral || story.moral_value}
+                </p>
+              </div>
+            )}
+
             {progress && (
               <div className="sub-help mt-4 inline-flex items-center gap-2 text-[#FFE9B0] bg-white/10 px-3.5 py-2 rounded-xl self-start">
                 <Sparkles className="w-4 h-4" />

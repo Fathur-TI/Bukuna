@@ -1,18 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, MoreVertical, Info, BookOpen, Heart, User, LogOut, Sparkles } from 'lucide-react';
+import { Search, MoreVertical, Info, BookOpen, Heart, User, LogOut, Sparkles, ShieldCheck } from 'lucide-react';
 import Logo from './Logo';
 import { useBukuna } from '../context/BukunaContext';
 
 /**
  * Header BUKUNA sesuai File 1 & File 2:
  * Logo di kiri, ikon Cari (Q) dan menu titik tiga (⋮) di kanan.
+ * Menampilkan tombol/link "Dashboard Admin" khusus apabila user yang login memiliki role === 'ADMIN'.
  */
 export default function Header({ showSearch = true, showMenu = true }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const navigate = useNavigate();
-  const { user, logout } = useBukuna();
+  const { user, isAdmin, logout } = useBukuna();
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -75,6 +76,15 @@ export default function Header({ showSearch = true, showMenu = true }) {
           >
             Tentang Kami
           </Link>
+          {isAdmin && (
+            <Link
+              to="/admin"
+              className="sub-top-nav px-4 py-2 rounded-full text-sm font-extrabold text-white bg-[#E07030] hover:bg-[#C95B1E] border-2 border-[#FFE9B0] shadow-md transition-all inline-flex items-center gap-1.5"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Dashboard Admin</span>
+            </Link>
+          )}
           <Link
             to="/akun"
             className="sub-top-nav px-4 py-2 rounded-full text-sm text-[#FFE9B0] bg-[#005E5C] hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"
@@ -83,8 +93,17 @@ export default function Header({ showSearch = true, showMenu = true }) {
           </Link>
         </nav>
 
-        {/* Ikon Kanan: Cari (Q) & Menu Titik Tiga (⋮) */}
+        {/* Ikon Kanan: Tombol Cepat Dashboard Admin (di mobile jika Admin), Cari (Q) & Menu Titik Tiga (⋮) */}
         <div className="flex items-center gap-1.5 sm:gap-2" ref={menuRef}>
+          {isAdmin && (
+            <Link
+              to="/admin"
+              className="lg:hidden min-h-[38px] px-3 py-1.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] border border-[#FFE9B0] text-white font-heading font-extrabold text-xs inline-flex items-center gap-1 shadow-md"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Dashboard Admin</span>
+            </Link>
+          )}
           {showSearch && (
             <button
               type="button"
@@ -118,6 +137,17 @@ export default function Header({ showSearch = true, showMenu = true }) {
                       {user ? user.nama : 'Tamu Bukuna'}
                     </p>
                   </div>
+
+                  {isAdmin && (
+                    <Link
+                      to="/admin"
+                      onClick={() => setMenuOpen(false)}
+                      className="flex items-center gap-3 px-4 py-3 text-sm font-extrabold bg-[#E07030] text-white hover:bg-[#C95B1E] transition-colors border-b border-white/15"
+                    >
+                      <ShieldCheck className="w-4 h-4 text-[#FFE9B0]" />
+                      <span>Dashboard Admin</span>
+                    </Link>
+                  )}
 
                   <Link
                     to="/kuis"

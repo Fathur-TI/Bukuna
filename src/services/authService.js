@@ -112,14 +112,33 @@ function buildNormalizedUser(authUser, profileRow = null) {
   if (!authUser) return null;
   const meta = authUser.user_metadata || {};
   const displayName =
-    (profileRow && profileRow.nama_akun) ||
+    (profileRow && (profileRow.nama_akun || profileRow.full_name || profileRow.nama || profileRow.name)) ||
     meta.nama_akun ||
+    meta.full_name ||
     meta.nama ||
     meta.name ||
     (authUser.email ? authUser.email.split('@')[0] : 'Sahabat Bukuna');
-  const peran = (profileRow && profileRow.peran) || meta.peran || 'guru';
+
+  const rawRole =
+    (profileRow && (profileRow.role || profileRow.peran)) ||
+    meta.role ||
+    meta.peran ||
+    'guru';
+
+  const isAdmin =
+    String(profileRow?.role || '').toUpperCase() === 'ADMIN' ||
+    String(profileRow?.peran || '').toUpperCase() === 'ADMIN' ||
+    String(rawRole).toUpperCase() === 'ADMIN';
+
+  const normalizedRole = isAdmin
+    ? 'ADMIN'
+    : String(rawRole).toUpperCase();
+  const normalizedPeran = isAdmin
+    ? 'admin'
+    : String((profileRow && profileRow.peran) || rawRole || 'guru').toLowerCase();
+
   const dibuat =
-    (profileRow && profileRow.dibuat) ||
+    (profileRow && (profileRow.dibuat || profileRow.created_at)) ||
     authUser.created_at ||
     new Date().toISOString();
 
@@ -128,9 +147,13 @@ function buildNormalizedUser(authUser, profileRow = null) {
     nama: displayName,
     name: displayName,
     nama_akun: displayName,
+    full_name: displayName,
     email: authUser.email || '',
-    peran,
+    peran: normalizedPeran,
+    role: normalizedRole,
+    isAdmin,
     dibuat,
+    created_at: dibuat,
     avatar: meta.avatar || 'orange-cat',
     isDemo: false,
   };
@@ -147,7 +170,7 @@ export async function fetchOrEnsureProfile(authUser, fallbackName = '') {
   try {
     const { data: existingProfile, error: selectErr } = await supabase
       .from('profiles')
-      .select('id, nama_akun, peran, dibuat')
+      .select('*')
       .eq('id', authUser.id)
       .maybeSingle();
 
@@ -159,6 +182,7 @@ export async function fetchOrEnsureProfile(authUser, fallbackName = '') {
     const candidateName =
       (fallbackName && fallbackName.trim()) ||
       meta.nama_akun ||
+      meta.full_name ||
       meta.nama ||
       meta.name ||
       (authUser.email ? authUser.email.split('@')[0] : 'Guru & Orang Tua Bukuna');
@@ -169,7 +193,7 @@ export async function fetchOrEnsureProfile(authUser, fallbackName = '') {
         id: authUser.id,
         nama_akun: candidateName,
       })
-      .select('id, nama_akun, peran, dibuat')
+      .select('*')
       .maybeSingle();
 
     if (!insertErr && insertedProfile) {
@@ -180,6 +204,7 @@ export async function fetchOrEnsureProfile(authUser, fallbackName = '') {
       id: authUser.id,
       nama_akun: candidateName,
       peran: 'guru',
+      role: 'GURU',
     });
   } catch {
     return buildNormalizedUser(authUser);

@@ -22,6 +22,10 @@ import {
   updateUserPassword,
   subscribeAuthChanges,
 } from '../services/authService';
+import {
+  fetchCatalogStories,
+  isUserAdmin,
+} from '../services/adminService';
 
 const BukunaContext = createContext(null);
 
@@ -42,11 +46,15 @@ function readStorage(key, fallback) {
 }
 
 /**
- * Membangun himpunan ID cerita aktif yang valid (2 cerita bawaan + seluruh cerita buatan pengguna)
+ * Membangun himpunan ID cerita aktif yang valid (cerita katalog Supabase/bawaan + seluruh cerita buatan pengguna)
  * serta himpunan ID kuis yang valid, lalu membersihkan referensi ke cerita yang sudah dihapus.
  */
-function buildValidIdSets(userStories = []) {
+function buildValidIdSets(userStories = [], catalogList = initialStories) {
   const validStoryIds = new Set(initialStories.map((s) => s.id));
+  (catalogList || []).forEach((s) => {
+    if (s && s.id) validStoryIds.add(s.id);
+    if (s && s.slug) validStoryIds.add(s.slug);
+  });
   (userStories || []).forEach((s) => {
     if (s && s.id) validStoryIds.add(s.id);
   });
@@ -126,6 +134,10 @@ export function BukunaProvider({ children }) {
     return null;
   });
 
+  // Daftar cerita katalog dari tabel `stories` Supabase (fallback ke initialStories jika belum dimigrasi)
+  const [catalogStories, setCatalogStories] = useState(() => initialStories);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+
   // Daftar cerita buatan pengguna (termasuk draf & terbit)
   const [myStories, setMyStories] = useState(() => getMyStories());
 
@@ -204,9 +216,27 @@ export function BukunaProvider({ children }) {
     };
   }, []);
 
+  // Muat katalog cerita dari tabel `stories` Supabase (dan migrasi otomatis jika tabel kosong)
+  const refreshCatalogStories = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const res = await fetchCatalogStories({ autoMigrateIfEmpty: true });
+      if (res && Array.isArray(res.stories) && res.stories.length > 0) {
+        setCatalogStories(res.stories);
+      }
+      return res;
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshCatalogStories();
+  }, [refreshCatalogStories, user?.id]);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
-    const { validStoryIds, validQuizIds } = buildValidIdSets(myStories);
+    const { validStoryIds, validQuizIds } = buildValidIdSets(myStories, catalogStories);
     setFavorites((prev) => {
       const next = sanitizeIdList(prev, validStoryIds);
       return next.length === prev.length ? prev : next;
@@ -223,7 +253,7 @@ export function BukunaProvider({ children }) {
       const next = sanitizeQuizResultsList(prev, validQuizIds);
       return next.length === prev.length ? prev : next;
     });
-  }, [myStories]);
+  }, [myStories, catalogStories]);
 
   // Preload gambar IndexedDB saat aplikasi dimuat & sinkronkan perubahan storyStorage
   useEffect(() => {
@@ -266,22 +296,40 @@ export function BukunaProvider({ children }) {
     }
   }, [quizResults]);
 
-  // Gabungkan cerita terbit buatan pengguna dengan cerita bawaan BUKUNA
+  // Gabungkan cerita terbit buatan pengguna dengan cerita katalog (dari tabel `stories` Supabase atau fallback statis)
   const stories = useMemo(() => {
     const publishedUserStories = myStories.filter((s) => s.status === 'terbit');
-    return [...publishedUserStories, ...initialStories];
-  }, [myStories]);
+    const activeCatalog =
+      Array.isArray(catalogStories) && catalogStories.length > 0
+        ? catalogStories
+        : initialStories;
+    const seenIds = new Set();
+    const merged = [];
 
-  // Ambil cerita berdasarkan ID (termasuk draf milik pengguna)
+    [...publishedUserStories, ...activeCatalog].forEach((item) => {
+      if (item && item.id && !seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        merged.push(item);
+      }
+    });
+
+    return merged;
+  }, [myStories, catalogStories]);
+
+  // Ambil cerita berdasarkan ID atau slug (termasuk cerita katalog Supabase & draf milik pengguna)
   const getAnyStoryById = useCallback(
     (storyId) => {
-      if (!storyId) return stories[0];
-      const fromUser = myStories.find((s) => s.id === storyId);
+      if (!storyId) return stories[0] || initialStories[0];
+      const fromUser = myStories.find((s) => s.id === storyId || s.slug === storyId);
       if (fromUser) return fromUser;
+      const fromCatalog = (catalogStories || []).find(
+        (s) => s.id === storyId || s.slug === storyId
+      );
+      if (fromCatalog) return fromCatalog;
       const fromInitial = initialStories.find((s) => s.id === storyId);
-      return fromInitial || stories[0];
+      return fromInitial || stories[0] || initialStories[0];
     },
-    [myStories, stories]
+    [myStories, catalogStories, stories]
   );
 
   const refreshMyStories = useCallback(() => {
@@ -547,10 +595,15 @@ export function BukunaProvider({ children }) {
     [myStories]
   );
 
+  const isAdmin = useMemo(() => isUserAdmin(user), [user]);
+
   return (
     <BukunaContext.Provider
       value={{
         stories,
+        catalogStories,
+        catalogLoading,
+        refreshCatalogStories,
         myStories,
         getAnyStoryById,
         refreshMyStories,
@@ -560,6 +613,7 @@ export function BukunaProvider({ children }) {
         exportUserStory,
         importUserStory,
         user,
+        isAdmin,
         authLoading,
         isDemoMode,
         isPasswordRecovery,

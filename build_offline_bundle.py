@@ -15,6 +15,7 @@ MODULE_ORDER = [
     "src/data/stories.js",
     "src/data/quizzes.js",
     "src/services/storyStorage.js",
+    "src/services/adminService.js",
     "src/utils/imageCompress.js",
     "src/hooks/useDebounce.js",
     "src/hooks/useAutosave.js",
@@ -69,6 +70,7 @@ MODULE_ORDER = [
     "src/pages/FinishStoryPage.jsx",
     "src/pages/AboutPage.jsx",
     "src/pages/SearchPage.jsx",
+    "src/pages/AdminDashboardPage.jsx",
     "src/App.jsx",
 ]
 

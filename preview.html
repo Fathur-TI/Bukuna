@@ -1813,14 +1813,33 @@ function buildNormalizedUser(authUser, profileRow = null) {
   if (!authUser) return null;
   const meta = authUser.user_metadata || {};
   const displayName =
-    (profileRow && profileRow.nama_akun) ||
+    (profileRow && (profileRow.nama_akun || profileRow.full_name || profileRow.nama || profileRow.name)) ||
     meta.nama_akun ||
+    meta.full_name ||
     meta.nama ||
     meta.name ||
     (authUser.email ? authUser.email.split('@')[0] : 'Sahabat Bukuna');
-  const peran = (profileRow && profileRow.peran) || meta.peran || 'guru';
+
+  const rawRole =
+    (profileRow && (profileRow.role || profileRow.peran)) ||
+    meta.role ||
+    meta.peran ||
+    'guru';
+
+  const isAdmin =
+    String(profileRow?.role || '').toUpperCase() === 'ADMIN' ||
+    String(profileRow?.peran || '').toUpperCase() === 'ADMIN' ||
+    String(rawRole).toUpperCase() === 'ADMIN';
+
+  const normalizedRole = isAdmin
+    ? 'ADMIN'
+    : String(rawRole).toUpperCase();
+  const normalizedPeran = isAdmin
+    ? 'admin'
+    : String((profileRow && profileRow.peran) || rawRole || 'guru').toLowerCase();
+
   const dibuat =
-    (profileRow && profileRow.dibuat) ||
+    (profileRow && (profileRow.dibuat || profileRow.created_at)) ||
     authUser.created_at ||
     new Date().toISOString();
 
@@ -1829,9 +1848,13 @@ function buildNormalizedUser(authUser, profileRow = null) {
     nama: displayName,
     name: displayName,
     nama_akun: displayName,
+    full_name: displayName,
     email: authUser.email || '',
-    peran,
+    peran: normalizedPeran,
+    role: normalizedRole,
+    isAdmin,
     dibuat,
+    created_at: dibuat,
     avatar: meta.avatar || 'orange-cat',
     isDemo: false,
   };
@@ -1848,7 +1871,7 @@ async function fetchOrEnsureProfile(authUser, fallbackName = '') {
   try {
     const { data: existingProfile, error: selectErr } = await supabase
       .from('profiles')
-      .select('id, nama_akun, peran, dibuat')
+      .select('*')
       .eq('id', authUser.id)
       .maybeSingle();
 
@@ -1860,6 +1883,7 @@ async function fetchOrEnsureProfile(authUser, fallbackName = '') {
     const candidateName =
       (fallbackName && fallbackName.trim()) ||
       meta.nama_akun ||
+      meta.full_name ||
       meta.nama ||
       meta.name ||
       (authUser.email ? authUser.email.split('@')[0] : 'Guru & Orang Tua Bukuna');
@@ -1870,7 +1894,7 @@ async function fetchOrEnsureProfile(authUser, fallbackName = '') {
         id: authUser.id,
         nama_akun: candidateName,
       })
-      .select('id, nama_akun, peran, dibuat')
+      .select('*')
       .maybeSingle();
 
     if (!insertErr && insertedProfile) {
@@ -1881,6 +1905,7 @@ async function fetchOrEnsureProfile(authUser, fallbackName = '') {
       id: authUser.id,
       nama_akun: candidateName,
       peran: 'guru',
+      role: 'GURU',
     });
   } catch {
     return buildNormalizedUser(authUser);
@@ -4375,6 +4400,665 @@ async function importStoryFromJson(jsonInput) {
 
 
 
+// === MODULE: src/services/adminService.js ===
+
+
+
+
+/**
+ * Layanan Dashboard Admin & Katalog Cerita Supabase (/src/services/adminService.js)
+ * - Mengelola katalog cerita di tabel `stories` Supabase (Fetch, Auto-Migrate dari initialStories jika kosong,
+ *   Tambah Cerita Baru, Edit Cerita, dan Hapus Cerita).
+ * - Mengonversi skema baris database `stories` (id, slug, title, synopsis, category, age_category,
+ *   cover_url, moral_value, pages, content) ke format objek cerita BUKUNA yang kompatibel 100%
+ *   dengan Beranda, Koleksi, Detail Cerita, dan Halaman Membaca.
+ * - Mengelola Moderasi Ulasan & Komentar (`story_comments` join `profiles`).
+ * - Mengambil Daftar Pengguna Terdaftar (`profiles`).
+ */
+
+const LOCAL_ADMIN_STORIES_KEY = 'bukuna_admin_stories_v1';
+const LOCAL_COMMENTS_KEY = 'bukuna_story_comments_v1';
+
+function slugifyStoryTitle(title) {
+  const base = String(title || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return base || `cerita-bukuna-${Date.now()}`;
+}
+
+function isUserAdmin(user) {
+  if (!user) return false;
+  return (
+    user.isAdmin === true ||
+    String(user.role || '').toUpperCase() === 'ADMIN' ||
+    String(user.peran || '').toUpperCase() === 'ADMIN'
+  );
+}
+
+/**
+ * Mengonversi baris dari tabel `stories` Supabase (atau objek cerita lokal)
+ * menjadi objek cerita BUKUNA standar yang dipakai seluruh komponen UI.
+ */
+function normalizeDbStoryToBukuna(row) {
+  if (!row || typeof row !== 'object') return null;
+
+  const slug = String(row.slug || row.id || slugifyStoryTitle(row.title || row.judul)).trim();
+  const id = String(row.id || slug).trim();
+  const judul = String(row.title || row.judul || 'Cerita Tanpa Judul').trim();
+  const sinopsis = String(row.synopsis || row.sinopsis || '').trim();
+  const kategori = String(row.category || row.kategori || 'Petualangan').trim();
+  const rawUsia = String(row.age_category || row.usia || '4-5 Tahun').trim();
+  const usia = migrateAgeLabel(rawUsia);
+  const kelompokUsia = extractAgeGroup(usia);
+  const cover = String(row.cover_url || row.cover || '/stories/kucing-hutan/cover.webp').trim();
+  const pesanMoral = String(row.moral_value || row.pesanMoral || '').trim();
+
+  let rawPages = [];
+  if (Array.isArray(row.pages) && row.pages.length > 0) {
+    rawPages = row.pages;
+  } else if (typeof row.pages === 'string' && row.pages.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(row.pages);
+      if (Array.isArray(parsed)) rawPages = parsed;
+    } catch {
+      rawPages = [];
+    }
+  }
+
+  // Jika pages kosong tapi ada kolom content (teks per paragraf dipisah baris kosong), pecah menjadi halaman
+  if (rawPages.length === 0 && typeof row.content === 'string' && row.content.trim()) {
+    const paragraphs = row.content
+      .split(/\n\s*\n/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    rawPages = paragraphs.map((pText, idx) => ({
+      halaman: idx + 1,
+      gambar: cover,
+      alt: `${judul} - Halaman ${idx + 1}`,
+      teks: pText,
+    }));
+  }
+
+  const pages =
+    rawPages.length > 0
+      ? rawPages.map((p, idx) => ({
+          id: (p && p.id) || `hal-${idx + 1}`,
+          halaman: idx + 1,
+          gambar: (p && (p.gambar || p.image_url || p.image)) || cover,
+          alt: (p && p.alt) || `${judul} - Halaman ${idx + 1}`,
+          teks: (p && (p.teks || p.text || p.content)) || '',
+        }))
+      : [
+          {
+            id: 'hal-1',
+            halaman: 1,
+            gambar: cover,
+            alt: judul,
+            teks: sinopsis || 'Mari membaca cerita seru ini bersama-sama!',
+          },
+        ];
+
+  return {
+    id,
+    slug,
+    judul,
+    title: judul,
+    kategori,
+    category: kategori,
+    usia,
+    age_category: usia,
+    kelompokUsia,
+    cover,
+    cover_url: cover,
+    coverAlt: row.coverAlt || judul,
+    objectPosition: row.objectPosition || 'center center',
+    featured: true,
+    sinopsis,
+    synopsis: sinopsis,
+    pesanMoral,
+    moral_value: pesanMoral,
+    pages,
+    content:
+      typeof row.content === 'string' && row.content.trim()
+        ? row.content
+        : pages.map((p) => p.teks).join('\n\n'),
+    created_at: row.created_at || new Date().toISOString(),
+    sumber: 'katalog',
+  };
+}
+
+/**
+ * Mengonversi objek cerita BUKUNA ke payload baris tabel `public.stories` Supabase
+ */
+function buildDbStoryPayload(input) {
+  const title = String(input.title || input.judul || 'Cerita Baru Bukuna').trim();
+  const slug = String(input.slug || input.id || slugifyStoryTitle(title)).trim();
+  const id = String(input.id || slug).trim();
+  const synopsis = String(input.synopsis || input.sinopsis || '').trim();
+  const category = String(input.category || input.kategori || 'Petualangan').trim();
+  const age_category = migrateAgeLabel(
+    String(input.age_category || input.usia || '4-5 Tahun').trim()
+  );
+  const cover_url = String(
+    input.cover_url || input.cover || '/stories/kucing-hutan/cover.webp'
+  ).trim();
+  const moral_value = String(input.moral_value || input.pesanMoral || '').trim();
+
+  let pages = [];
+  if (Array.isArray(input.pages) && input.pages.length > 0) {
+    pages = input.pages.map((p, idx) => ({
+      halaman: idx + 1,
+      gambar: (p && (p.gambar || p.image_url)) || cover_url,
+      alt: (p && p.alt) || `${title} - Halaman ${idx + 1}`,
+      teks: String((p && (p.teks || p.text)) || '').trim(),
+    }));
+  } else if (typeof input.content === 'string' && input.content.trim()) {
+    const paragraphs = input.content
+      .split(/\n\s*\n/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    pages = paragraphs.map((pText, idx) => ({
+      halaman: idx + 1,
+      gambar: cover_url,
+      alt: `${title} - Halaman ${idx + 1}`,
+      teks: pText,
+    }));
+  }
+
+  if (pages.length === 0) {
+    pages = [
+      {
+        halaman: 1,
+        gambar: cover_url,
+        alt: title,
+        teks: synopsis || 'Halaman pertama cerita.',
+      },
+    ];
+  }
+
+  const content = pages.map((p) => p.teks).join('\n\n');
+
+  return {
+    id,
+    slug,
+    title,
+    synopsis,
+    category,
+    age_category,
+    cover_url,
+    moral_value,
+    pages,
+    content,
+  };
+}
+
+function readLocalCatalogStories() {
+  try {
+    const raw = localStorage.getItem(LOCAL_ADMIN_STORIES_KEY);
+    if (!raw) {
+      return initialStories.map((s) =>
+        normalizeDbStoryToBukuna({
+          ...s,
+          slug: s.id,
+          title: s.judul,
+          synopsis: s.sinopsis,
+          category: s.kategori,
+          age_category: s.usia,
+          cover_url: s.cover,
+          moral_value:
+            s.id === 'petualangan-kucing-di-hutan-ajaib'
+              ? 'Keberanian, sikap suka menolong sahabat, dan rasa syukur akan kehangatan rumah.'
+              : 'Berbagi kebaikan sederhana dapat menghadirkan kebahagiaan bagi teman-teman di sekitar kita.',
+        })
+      );
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return initialStories.map((s) => normalizeDbStoryToBukuna(s));
+    }
+    return parsed.map((s) => normalizeDbStoryToBukuna(s)).filter(Boolean);
+  } catch {
+    return initialStories.map((s) => normalizeDbStoryToBukuna(s)).filter(Boolean);
+  }
+}
+
+function writeLocalCatalogStories(list) {
+  try {
+    localStorage.setItem(LOCAL_ADMIN_STORIES_KEY, JSON.stringify(list));
+  } catch {
+    // Abaikan jika penyimpanan lokal penuh
+  }
+}
+
+/**
+ * 1. AMBIL KATALOG CERITA DARI TABEL `stories` SUPABASE
+ * - Jika tabel `stories` masih kosong dan pengguna adalah Admin (atau kebijakan mengizinkan),
+ *   otomatis migrasikan 2 cerita statis bawaan ke tabel `stories`.
+ * - Jika tabel `stories` belum dibuat di Supabase, gunakan fallback cerita bawaan dengan aman.
+ */
+async function fetchCatalogStories({ autoMigrateIfEmpty = true } = {}) {
+  const defaultInitialNormalized = initialStories
+    .map((s) =>
+      normalizeDbStoryToBukuna({
+        ...s,
+        slug: s.id,
+        title: s.judul,
+        synopsis: s.sinopsis,
+        category: s.kategori,
+        age_category: s.usia,
+        cover_url: s.cover,
+        moral_value:
+          s.id === 'petualangan-kucing-di-hutan-ajaib'
+            ? 'Keberanian, sikap suka menolong sahabat, dan rasa syukur akan kehangatan rumah.'
+            : 'Berbagi kebaikan sederhana dapat menghadirkan kebahagiaan bagi teman-teman di sekitar kita.',
+      })
+    )
+    .filter(Boolean);
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    return {
+      ok: true,
+      stories: readLocalCatalogStories(),
+      fromSupabase: false,
+    };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('stories')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      return {
+        ok: true,
+        stories: defaultInitialNormalized,
+        fromSupabase: false,
+        dbNotice:
+          'Menggunakan data cerita statis bawaan (jalankan bagian tabel public.stories di supabase/schema.sql untuk mengaktifkan penyimpanan cerita di database).',
+      };
+    }
+
+    if (Array.isArray(data) && data.length > 0) {
+      const normalized = data.map((row) => normalizeDbStoryToBukuna(row)).filter(Boolean);
+      return {
+        ok: true,
+        stories: normalized,
+        fromSupabase: true,
+      };
+    }
+
+    // Jika tabel `stories` di Supabase masih kosong (0 baris), coba migrasikan cerita bawaan
+    if (autoMigrateIfEmpty) {
+      const seedPayloads = defaultInitialNormalized.map((s) => buildDbStoryPayload(s));
+      const { data: insertedData, error: seedError } = await supabase
+        .from('stories')
+        .upsert(seedPayloads, { onConflict: 'id' })
+        .select('*');
+
+      if (!seedError && Array.isArray(insertedData) && insertedData.length > 0) {
+        return {
+          ok: true,
+          stories: insertedData.map((row) => normalizeDbStoryToBukuna(row)).filter(Boolean),
+          fromSupabase: true,
+          migrated: true,
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      stories: defaultInitialNormalized,
+      fromSupabase: true,
+    };
+  } catch {
+    return {
+      ok: true,
+      stories: defaultInitialNormalized,
+      fromSupabase: false,
+    };
+  }
+}
+
+/**
+ * 2. SIMPAN (TAMBAH / EDIT) CERITA DI TABEL `stories` SUPABASE
+ */
+async function upsertCatalogStory(storyInput, isEdit = false) {
+  const payload = buildDbStoryPayload(storyInput);
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    const current = readLocalCatalogStories();
+    const normalized = normalizeDbStoryToBukuna(payload);
+    const existsIdx = current.findIndex((s) => s.id === normalized.id || s.slug === normalized.slug);
+    let next;
+    if (existsIdx !== -1) {
+      next = current.map((s, idx) => (idx === existsIdx ? normalized : s));
+    } else {
+      next = [...current, normalized];
+    }
+    writeLocalCatalogStories(next);
+    return { ok: true, story: normalized };
+  }
+
+  try {
+    // Jika tabel di Supabase baru saja kosong dan Admin menambah cerita pertama,
+    // pastikan 2 cerita bawaan juga ikut disinkronkan agar tidak hilang
+    const { data: existingRows } = await supabase.from('stories').select('id').limit(5);
+    if (Array.isArray(existingRows) && existingRows.length === 0) {
+      const seedPayloads = initialStories.map((s) =>
+        buildDbStoryPayload({
+          ...s,
+          moral_value:
+            s.id === 'petualangan-kucing-di-hutan-ajaib'
+              ? 'Keberanian, sikap suka menolong sahabat, dan rasa syukur akan kehangatan rumah.'
+              : 'Berbagi kebaikan sederhana dapat menghadirkan kebahagiaan bagi teman-teman di sekitar kita.',
+        })
+      );
+      await supabase.from('stories').upsert(seedPayloads, { onConflict: 'id' });
+    }
+
+    const { data, error } = await supabase
+      .from('stories')
+      .upsert(
+        {
+          ...payload,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      )
+      .select('*')
+      .maybeSingle();
+
+    if (error) {
+      return {
+        ok: false,
+        error:
+          error.message ||
+          'Gagal menyimpan cerita ke tabel stories Supabase. Pastikan skema SQL tabel stories sudah dijalankan.',
+      };
+    }
+
+    return {
+      ok: true,
+      story: normalizeDbStoryToBukuna(data || payload),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: (err && err.message) || 'Terjadi kendala saat menyimpan cerita ke database.',
+    };
+  }
+}
+
+/**
+ * 3. HAPUS CERITA DARI TABEL `stories` SUPABASE
+ */
+async function deleteCatalogStory(storyId) {
+  if (!storyId) {
+    return { ok: false, error: 'ID cerita tidak valid.' };
+  }
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    const current = readLocalCatalogStories();
+    const next = current.filter((s) => s.id !== storyId && s.slug !== storyId);
+    writeLocalCatalogStories(next);
+    return { ok: true };
+  }
+
+  try {
+    const { error } = await supabase.from('stories').delete().eq('id', storyId);
+    if (error) {
+      return {
+        ok: false,
+        error: error.message || 'Gagal menghapus cerita dari database.',
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: (err && err.message) || 'Terjadi kendala jaringan saat menghapus cerita.',
+    };
+  }
+}
+
+/**
+ * 4. AMBIL SELURUH ULASAN & BALASAN UNTUK MODERASI ADMIN
+ */
+async function fetchAllCommentsForAdmin(storiesList = []) {
+  const storyTitleMap = {};
+  (storiesList || []).forEach((s) => {
+    if (s && s.id) storyTitleMap[s.id] = s.judul || s.title || s.id;
+  });
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    try {
+      const raw = localStorage.getItem(LOCAL_COMMENTS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const list = Array.isArray(parsed) ? parsed : [];
+      return {
+        ok: true,
+        comments: list.map((c) => ({
+          ...c,
+          story_title: storyTitleMap[c.story_id] || c.story_id,
+        })),
+      };
+    } catch {
+      return { ok: true, comments: [] };
+    }
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('story_comments')
+      .select(
+        `
+        id,
+        story_id,
+        user_id,
+        parent_id,
+        rating,
+        comment,
+        created_at,
+        profiles (
+          id,
+          nama_akun,
+          full_name,
+          peran,
+          role
+        )
+      `
+      )
+      .order('created_at', { ascending: false });
+
+    if (!error && Array.isArray(data)) {
+      const formatted = data.map((row) => {
+        const prof = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
+        const authorName =
+          (prof && (prof.nama_akun || prof.full_name)) || 'Pengguna Bukuna';
+        const authorRole = (prof && (prof.role || prof.peran)) || 'GURU';
+        return {
+          id: String(row.id),
+          story_id: String(row.story_id || ''),
+          story_title: storyTitleMap[row.story_id] || String(row.story_id || ''),
+          user_id: String(row.user_id || ''),
+          parent_id: row.parent_id ? String(row.parent_id) : null,
+          rating: row.rating,
+          comment: String(row.comment || ''),
+          created_at: row.created_at || new Date().toISOString(),
+          author_name: authorName,
+          author_role: String(authorRole).toUpperCase(),
+        };
+      });
+      return { ok: true, comments: formatted };
+    }
+
+    // Fallback tanpa relational join
+    const { data: rawComments, error: rawErr } = await supabase
+      .from('story_comments')
+      .select('id, story_id, user_id, parent_id, rating, comment, created_at')
+      .order('created_at', { ascending: false });
+
+    if (rawErr) {
+      return { ok: false, comments: [], error: rawErr.message };
+    }
+
+    const rows = Array.isArray(rawComments) ? rawComments : [];
+    const userIds = Array.from(new Set(rows.map((r) => r.user_id).filter(Boolean)));
+    const profMap = {};
+    if (userIds.length > 0) {
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('*')
+        .in('id', userIds);
+      if (Array.isArray(profs)) {
+        profs.forEach((p) => {
+          if (p && p.id) profMap[p.id] = p;
+        });
+      }
+    }
+
+    return {
+      ok: true,
+      comments: rows.map((row) => {
+        const prof = profMap[row.user_id];
+        return {
+          id: String(row.id),
+          story_id: String(row.story_id || ''),
+          story_title: storyTitleMap[row.story_id] || String(row.story_id || ''),
+          user_id: String(row.user_id || ''),
+          parent_id: row.parent_id ? String(row.parent_id) : null,
+          rating: row.rating,
+          comment: String(row.comment || ''),
+          created_at: row.created_at || new Date().toISOString(),
+          author_name:
+            (prof && (prof.nama_akun || prof.full_name)) || 'Pengguna Bukuna',
+          author_role: String(
+            (prof && (prof.role || prof.peran)) || 'GURU'
+          ).toUpperCase(),
+        };
+      }),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      comments: [],
+      error: (err && err.message) || 'Gagal memuat daftar komentar untuk moderasi.',
+    };
+  }
+}
+
+/**
+ * 5. HAPUS KOMENTAR / BALASAN OLEH ADMIN (Moderasi)
+ */
+async function adminDeleteComment(commentId) {
+  if (!commentId) return { ok: false, error: 'ID komentar tidak valid.' };
+
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    try {
+      const raw = localStorage.getItem(LOCAL_COMMENTS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const next = (Array.isArray(parsed) ? parsed : []).filter(
+        (c) => c.id !== commentId && c.parent_id !== commentId
+      );
+      localStorage.setItem(LOCAL_COMMENTS_KEY, JSON.stringify(next));
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Gagal menghapus komentar lokal.' };
+    }
+  }
+
+  try {
+    const { error } = await supabase
+      .from('story_comments')
+      .delete()
+      .eq('id', commentId);
+
+    if (error) {
+      return {
+        ok: false,
+        error:
+          error.message ||
+          'Gagal menghapus komentar. Pastikan kebijakan RLS Admin DELETE pada story_comments sudah aktif.',
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: (err && err.message) || 'Terjadi kendala saat menghapus komentar.',
+    };
+  }
+}
+
+/**
+ * 6. AMBIL DAFTAR PENGGUNA DARI TABEL `profiles` SUPABASE
+ */
+async function fetchAllProfilesForAdmin() {
+  if (isAuthInDemoMode() || !isSupabaseConfigured || !supabase) {
+    return {
+      ok: true,
+      profiles: [
+        {
+          id: 'usr-demo-admin',
+          full_name: 'Admin Bukuna (Demo)',
+          role: 'ADMIN',
+          created_at: new Date().toISOString(),
+        },
+      ],
+    };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*');
+
+    if (error) {
+      return {
+        ok: false,
+        profiles: [],
+        error: error.message || 'Gagal memuat daftar pengguna dari tabel profiles.',
+      };
+    }
+
+    const formatted = (Array.isArray(data) ? data : [])
+      .map((p) => {
+        const fullName =
+          p.full_name || p.nama_akun || p.nama || p.name || 'Pengguna Bukuna';
+        const isAdm =
+          String(p.role || '').toUpperCase() === 'ADMIN' ||
+          String(p.peran || '').toUpperCase() === 'ADMIN';
+        const roleBadge = isAdm
+          ? 'ADMIN'
+          : String(p.role || p.peran || 'GURU').toUpperCase();
+        const joinedAt = p.created_at || p.dibuat || new Date().toISOString();
+
+        return {
+          id: String(p.id),
+          full_name: fullName,
+          nama_akun: fullName,
+          role: roleBadge,
+          created_at: joinedAt,
+        };
+      })
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    return { ok: true, profiles: formatted };
+  } catch (err) {
+    return {
+      ok: false,
+      profiles: [],
+      error: (err && err.message) || 'Terjadi kendala saat memuat daftar pengguna.',
+    };
+  }
+}
+
+
 // === MODULE: src/utils/imageCompress.js ===
 /**
  * Utilitas Validasi, Crop, Putar, dan Kompresi Gambar Otomatis di Browser (src/utils/imageCompress.js)
@@ -5034,6 +5718,7 @@ function useQuiz(quiz, onCompleteQuiz) {
 
 
 
+
 const BukunaContext = createContext(null);
 
 const STORAGE_KEYS = {
@@ -5053,11 +5738,15 @@ function readStorage(key, fallback) {
 }
 
 /**
- * Membangun himpunan ID cerita aktif yang valid (2 cerita bawaan + seluruh cerita buatan pengguna)
+ * Membangun himpunan ID cerita aktif yang valid (cerita katalog Supabase/bawaan + seluruh cerita buatan pengguna)
  * serta himpunan ID kuis yang valid, lalu membersihkan referensi ke cerita yang sudah dihapus.
  */
-function buildValidIdSets(userStories = []) {
+function buildValidIdSets(userStories = [], catalogList = initialStories) {
   const validStoryIds = new Set(initialStories.map((s) => s.id));
+  (catalogList || []).forEach((s) => {
+    if (s && s.id) validStoryIds.add(s.id);
+    if (s && s.slug) validStoryIds.add(s.slug);
+  });
   (userStories || []).forEach((s) => {
     if (s && s.id) validStoryIds.add(s.id);
   });
@@ -5137,6 +5826,10 @@ function BukunaProvider({ children }) {
     return null;
   });
 
+  // Daftar cerita katalog dari tabel `stories` Supabase (fallback ke initialStories jika belum dimigrasi)
+  const [catalogStories, setCatalogStories] = useState(() => initialStories);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+
   // Daftar cerita buatan pengguna (termasuk draf & terbit)
   const [myStories, setMyStories] = useState(() => getMyStories());
 
@@ -5215,9 +5908,27 @@ function BukunaProvider({ children }) {
     };
   }, []);
 
+  // Muat katalog cerita dari tabel `stories` Supabase (dan migrasi otomatis jika tabel kosong)
+  const refreshCatalogStories = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const res = await fetchCatalogStories({ autoMigrateIfEmpty: true });
+      if (res && Array.isArray(res.stories) && res.stories.length > 0) {
+        setCatalogStories(res.stories);
+      }
+      return res;
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshCatalogStories();
+  }, [refreshCatalogStories, user?.id]);
+
   // Pembersihan otomatis satu kali / reaktif jika ada ID cerita lama yang sudah tidak ada
   useEffect(() => {
-    const { validStoryIds, validQuizIds } = buildValidIdSets(myStories);
+    const { validStoryIds, validQuizIds } = buildValidIdSets(myStories, catalogStories);
     setFavorites((prev) => {
       const next = sanitizeIdList(prev, validStoryIds);
       return next.length === prev.length ? prev : next;
@@ -5234,7 +5945,7 @@ function BukunaProvider({ children }) {
       const next = sanitizeQuizResultsList(prev, validQuizIds);
       return next.length === prev.length ? prev : next;
     });
-  }, [myStories]);
+  }, [myStories, catalogStories]);
 
   // Preload gambar IndexedDB saat aplikasi dimuat & sinkronkan perubahan storyStorage
   useEffect(() => {
@@ -5277,22 +5988,40 @@ function BukunaProvider({ children }) {
     }
   }, [quizResults]);
 
-  // Gabungkan cerita terbit buatan pengguna dengan cerita bawaan BUKUNA
+  // Gabungkan cerita terbit buatan pengguna dengan cerita katalog (dari tabel `stories` Supabase atau fallback statis)
   const stories = useMemo(() => {
     const publishedUserStories = myStories.filter((s) => s.status === 'terbit');
-    return [...publishedUserStories, ...initialStories];
-  }, [myStories]);
+    const activeCatalog =
+      Array.isArray(catalogStories) && catalogStories.length > 0
+        ? catalogStories
+        : initialStories;
+    const seenIds = new Set();
+    const merged = [];
 
-  // Ambil cerita berdasarkan ID (termasuk draf milik pengguna)
+    [...publishedUserStories, ...activeCatalog].forEach((item) => {
+      if (item && item.id && !seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        merged.push(item);
+      }
+    });
+
+    return merged;
+  }, [myStories, catalogStories]);
+
+  // Ambil cerita berdasarkan ID atau slug (termasuk cerita katalog Supabase & draf milik pengguna)
   const getAnyStoryById = useCallback(
     (storyId) => {
-      if (!storyId) return stories[0];
-      const fromUser = myStories.find((s) => s.id === storyId);
+      if (!storyId) return stories[0] || initialStories[0];
+      const fromUser = myStories.find((s) => s.id === storyId || s.slug === storyId);
       if (fromUser) return fromUser;
+      const fromCatalog = (catalogStories || []).find(
+        (s) => s.id === storyId || s.slug === storyId
+      );
+      if (fromCatalog) return fromCatalog;
       const fromInitial = initialStories.find((s) => s.id === storyId);
-      return fromInitial || stories[0];
+      return fromInitial || stories[0] || initialStories[0];
     },
-    [myStories, stories]
+    [myStories, catalogStories, stories]
   );
 
   const refreshMyStories = useCallback(() => {
@@ -5558,9 +6287,14 @@ function BukunaProvider({ children }) {
     [myStories]
   );
 
+  const isAdmin = useMemo(() => isUserAdmin(user), [user]);
+
   return (
     React.createElement(BukunaContext.Provider, {value: {
         stories,
+        catalogStories,
+        catalogLoading,
+        refreshCatalogStories,
         myStories,
         getAnyStoryById,
         refreshMyStories,
@@ -5570,6 +6304,7 @@ function BukunaProvider({ children }) {
         exportUserStory,
         importUserStory,
         user,
+        isAdmin,
         authLoading,
         isDemoMode,
         isPasswordRecovery,
@@ -6191,12 +6926,13 @@ function StoryCard({ story, showProgress = false }) {
 /**
  * Header BUKUNA sesuai File 1 & File 2:
  * Logo di kiri, ikon Cari (Q) dan menu titik tiga (⋮) di kanan.
+ * Menampilkan tombol/link "Dashboard Admin" khusus apabila user yang login memiliki role === 'ADMIN'.
  */
 function Header({ showSearch = true, showMenu = true }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const navigate = useNavigate();
-  const { user, logout } = useBukuna();
+  const { user, isAdmin, logout } = useBukuna();
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -6215,11 +6951,17 @@ function Header({ showSearch = true, showMenu = true }) {
   };
 
   return (
-    React.createElement("header", {className: "sticky top-0 z-30 w-full bg-[#007A78]/95 backdrop-blur-md border-b border-white/10"}, React.createElement("div", {className: "max-w-[1200px] mx-auto px-4 sm:px-6 h-16 sm:h-18 flex items-center justify-between gap-3"}, React.createElement(Link, {to: "/beranda", className: "inline-flex items-center py-1 rounded-xl focus:outline-none", "aria-label": "Kembali ke Beranda Bukuna"}, React.createElement(Logo, {size: "sm"})), React.createElement("nav", {"aria-label": "Navigasi Utama Desktop", className: "hidden lg:flex items-center gap-2"}, React.createElement(Link, {to: "/beranda", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Beranda"), React.createElement(Link, {to: "/koleksi", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Koleksi Cerita"), React.createElement(Link, {to: "/favorit", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Cerita Favorit"), React.createElement(Link, {to: "/kuis", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-[#FFE9B0] hover:bg-[#1FAFAA]/40 transition-colors inline-flex items-center gap-1.5"}, React.createElement(Sparkles, {className: "w-4 h-4"}), React.createElement("span", null, "Main Kuis")), React.createElement(Link, {to: "/tentang", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Tentang Kami"), React.createElement(Link, {to: "/akun", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-[#FFE9B0] bg-[#005E5C] hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, user ? user.nama : 'Akun Saya')), React.createElement("div", {className: "flex items-center gap-1.5 sm:gap-2", ref: menuRef}, showSearch && (
+    React.createElement("header", {className: "sticky top-0 z-30 w-full bg-[#007A78]/95 backdrop-blur-md border-b border-white/10"}, React.createElement("div", {className: "max-w-[1200px] mx-auto px-4 sm:px-6 h-16 sm:h-18 flex items-center justify-between gap-3"}, React.createElement(Link, {to: "/beranda", className: "inline-flex items-center py-1 rounded-xl focus:outline-none", "aria-label": "Kembali ke Beranda Bukuna"}, React.createElement(Logo, {size: "sm"})), React.createElement("nav", {"aria-label": "Navigasi Utama Desktop", className: "hidden lg:flex items-center gap-2"}, React.createElement(Link, {to: "/beranda", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Beranda"), React.createElement(Link, {to: "/koleksi", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Koleksi Cerita"), React.createElement(Link, {to: "/favorit", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Cerita Favorit"), React.createElement(Link, {to: "/kuis", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-[#FFE9B0] hover:bg-[#1FAFAA]/40 transition-colors inline-flex items-center gap-1.5"}, React.createElement(Sparkles, {className: "w-4 h-4"}), React.createElement("span", null, "Main Kuis")), React.createElement(Link, {to: "/tentang", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-white hover:bg-[#1FAFAA]/40 transition-colors"}, "Tentang Kami"), isAdmin && (
+            React.createElement(Link, {to: "/admin", className: "sub-top-nav px-4 py-2 rounded-full text-sm font-extrabold text-white bg-[#E07030] hover:bg-[#C95B1E] border-2 border-[#FFE9B0] shadow-md transition-all inline-flex items-center gap-1.5"}, React.createElement(ShieldCheck, {className: "w-4 h-4"}), React.createElement("span", null, "Dashboard Admin"))
+          ), React.createElement(Link, {to: "/akun", className: "sub-top-nav px-4 py-2 rounded-full text-sm text-[#FFE9B0] bg-[#005E5C] hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, user ? user.nama : 'Akun Saya')), React.createElement("div", {className: "flex items-center gap-1.5 sm:gap-2", ref: menuRef}, isAdmin && (
+            React.createElement(Link, {to: "/admin", className: "lg:hidden min-h-[38px] px-3 py-1.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] border border-[#FFE9B0] text-white font-heading font-extrabold text-xs inline-flex items-center gap-1 shadow-md"}, React.createElement(ShieldCheck, {className: "w-3.5 h-3.5"}), React.createElement("span", null, "Dashboard Admin"))
+          ), showSearch && (
             React.createElement("button", {type: "button", onClick: () => navigate('/pencarian'), "aria-label": "Cari cerita", className: "w-11 h-11 rounded-full flex items-center justify-center text-white hover:bg-white/15 transition-colors cursor-pointer"}, React.createElement(Search, {className: "w-6 h-6 stroke-[2.5]"}))
           ), showMenu && (
             React.createElement("div", {className: "relative"}, React.createElement("button", {type: "button", onClick: () => setMenuOpen((prev) => !prev), "aria-label": "Menu lainnya", "aria-expanded": menuOpen, className: "w-11 h-11 rounded-full flex items-center justify-center text-white hover:bg-white/15 transition-colors cursor-pointer"}, React.createElement(MoreVertical, {className: "w-6 h-6 stroke-[2.5]"})), menuOpen && (
-                React.createElement("div", {className: "absolute right-0 mt-2 w-60 rounded-2xl bg-[#005E5C] border-2 border-[#1FAFAA] shadow-2xl py-2 z-50 text-white overflow-hidden"}, React.createElement("div", {className: "px-4 py-2.5 border-b border-white/15"}, React.createElement("p", {className: "text-xs text-[#FFE9B0] font-bold uppercase tracking-wider"}, "Menu Bukuna"), React.createElement("p", {className: "text-sm font-bold truncate mt-0.5"}, user ? user.nama : 'Tamu Bukuna')), React.createElement(Link, {to: "/kuis", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-extrabold text-[#FFE9B0] hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(Sparkles, {className: "w-4 h-4 text-[#FFE9B0]"}), React.createElement("span", null, "Main Kuis Interaktif")), React.createElement(Link, {to: "/tentang", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(Info, {className: "w-4 h-4"}), React.createElement("span", null, "Tentang Kami")), React.createElement(Link, {to: "/koleksi", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(BookOpen, {className: "w-4 h-4"}), React.createElement("span", null, "Semua Cerita & Koleksi")), React.createElement(Link, {to: "/favorit", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(Heart, {className: "w-4 h-4"}), React.createElement("span", null, "Cerita Favorit")), React.createElement(Link, {to: "/akun", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(User, {className: "w-4 h-4"}), React.createElement("span", null, "Profil & Riwayat Bacaan")), React.createElement(Link, {to: "/splash", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors border-t border-white/10"}, React.createElement(Sparkles, {className: "w-4 h-4 text-[#FFE9B0]"}), React.createElement("span", null, "Lihat Splash Screen")), React.createElement("button", {type: "button", onClick: handleLogout, className: "w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-[#FFE9B0] hover:bg-[#E07030] hover:text-white transition-colors border-t border-white/10 cursor-pointer text-left"}, React.createElement(LogOut, {className: "w-4 h-4"}), React.createElement("span", null, user ? 'Keluar Akun' : 'Masuk / Daftar')))
+                React.createElement("div", {className: "absolute right-0 mt-2 w-60 rounded-2xl bg-[#005E5C] border-2 border-[#1FAFAA] shadow-2xl py-2 z-50 text-white overflow-hidden"}, React.createElement("div", {className: "px-4 py-2.5 border-b border-white/15"}, React.createElement("p", {className: "text-xs text-[#FFE9B0] font-bold uppercase tracking-wider"}, "Menu Bukuna"), React.createElement("p", {className: "text-sm font-bold truncate mt-0.5"}, user ? user.nama : 'Tamu Bukuna')), isAdmin && (
+                    React.createElement(Link, {to: "/admin", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-extrabold bg-[#E07030] text-white hover:bg-[#C95B1E] transition-colors border-b border-white/15"}, React.createElement(ShieldCheck, {className: "w-4 h-4 text-[#FFE9B0]"}), React.createElement("span", null, "Dashboard Admin"))
+                  ), React.createElement(Link, {to: "/kuis", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-extrabold text-[#FFE9B0] hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(Sparkles, {className: "w-4 h-4 text-[#FFE9B0]"}), React.createElement("span", null, "Main Kuis Interaktif")), React.createElement(Link, {to: "/tentang", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(Info, {className: "w-4 h-4"}), React.createElement("span", null, "Tentang Kami")), React.createElement(Link, {to: "/koleksi", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(BookOpen, {className: "w-4 h-4"}), React.createElement("span", null, "Semua Cerita & Koleksi")), React.createElement(Link, {to: "/favorit", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(Heart, {className: "w-4 h-4"}), React.createElement("span", null, "Cerita Favorit")), React.createElement(Link, {to: "/akun", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors"}, React.createElement(User, {className: "w-4 h-4"}), React.createElement("span", null, "Profil & Riwayat Bacaan")), React.createElement(Link, {to: "/splash", onClick: () => setMenuOpen(false), className: "flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-[#1FAFAA] hover:text-[#062D2C] transition-colors border-t border-white/10"}, React.createElement(Sparkles, {className: "w-4 h-4 text-[#FFE9B0]"}), React.createElement("span", null, "Lihat Splash Screen")), React.createElement("button", {type: "button", onClick: handleLogout, className: "w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-[#FFE9B0] hover:bg-[#E07030] hover:text-white transition-colors border-t border-white/10 cursor-pointer text-left"}, React.createElement(LogOut, {className: "w-4 h-4"}), React.createElement("span", null, user ? 'Keluar Akun' : 'Masuk / Daftar')))
               ))
           ))))
   );
@@ -9267,6 +10009,7 @@ function ProfilePage() {
   const navigate = useNavigate();
   const {
     user,
+    isAdmin,
     stories,
     myStories,
     favorites,
@@ -9305,8 +10048,10 @@ function ProfilePage() {
   };
 
   return (
-    React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[960px] mx-auto px-4 sm:px-6 pt-2 pb-8"}, React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-12 gap-6 items-start"}, React.createElement("section", {className: "md:col-span-5 bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-6 text-center shadow-2xl flex flex-col items-center"}, React.createElement(CatAvatar, {size: "lg", className: "mt-1"}), React.createElement("h1", {className: "mt-4 font-heading font-extrabold text-2xl text-[#FFE9B0]"}, user ? user.nama || user.name : 'Tamu Bukuna'), React.createElement("p", {className: "sub-label text-white/85 mt-0.5"}, user ? user.email : 'Belum masuk akun'), user && user.peran && (
-              React.createElement("span", {className: "mt-2 px-3 py-0.5 rounded-full bg-[#062D2C] border border-[#1FAFAA] text-xs font-extrabold uppercase tracking-wider text-[#FFE9B0]"}, "Peran: ", user.peran)
+    React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col pb-24 lg:pb-12"}, React.createElement(Header, null), React.createElement("main", {className: "flex-1 w-full max-w-[960px] mx-auto px-4 sm:px-6 pt-2 pb-8"}, React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-12 gap-6 items-start"}, React.createElement("section", {className: "md:col-span-5 bg-[#005E5C]/80 backdrop-blur-md border-2 border-[#1FAFAA]/50 rounded-[32px] p-6 text-center shadow-2xl flex flex-col items-center"}, React.createElement(CatAvatar, {size: "lg", className: "mt-1"}), React.createElement("h1", {className: "mt-4 font-heading font-extrabold text-2xl text-[#FFE9B0]"}, user ? user.nama || user.name : 'Tamu Bukuna'), React.createElement("p", {className: "sub-label text-white/85 mt-0.5"}, user ? user.email : 'Belum masuk akun'), user && (user.role || user.peran) && (
+              React.createElement("span", {className: "mt-2 px-3 py-0.5 rounded-full bg-[#062D2C] border border-[#1FAFAA] text-xs font-extrabold uppercase tracking-wider text-[#FFE9B0]"}, "Peran: ", isAdmin ? 'ADMIN' : user.role || user.peran)
+            ), isAdmin && (
+              React.createElement(Link, {to: "/admin", className: "mt-4 w-full min-h-[48px] px-5 py-2.5 rounded-full bg-[#062D2C] hover:bg-[#1FAFAA] text-[#FFE9B0] hover:text-[#052625] border-2 border-[#FFE9B0] font-heading font-extrabold text-sm sm:text-base shadow-lg flex items-center justify-center gap-2 transition-all"}, React.createElement(ShieldCheck, {className: "w-5 h-5"}), React.createElement("span", null, "Buka Dashboard Admin"))
             ), React.createElement("button", {type: "button", onClick: handleCreateNewStory, className: "mt-4 w-full min-h-[48px] px-5 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-sm sm:text-base shadow-lg flex items-center justify-center gap-2 transition-all cursor-pointer"}, React.createElement(Plus, {className: "w-5 h-5"}), React.createElement("span", null, "+ Buat Cerita Sendiri")), React.createElement("div", {className: "w-full mt-5 bg-[#1FAFAA] rounded-[26px] overflow-hidden shadow-inner border-2 border-white/20 divide-y-2 divide-white/50 text-[#052625]"}, React.createElement("button", {type: "button", onClick: () => navigate('/cerita-saya'), className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer bg-[#FFE9B0]/25"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Edit3, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Cerita Saya")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#062D2C] text-[#FFE9B0] text-xs font-extrabold"}, myStories.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => setActiveSection('kuis'), className: `w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer ${
                   activeSection === 'kuis' ? 'bg-black/15' : 'bg-[#FFE9B0]/15'
                 }`}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Star, {className: "w-5 h-5 stroke-[2.4] fill-[#E07030] text-[#052625]"}), React.createElement("span", null, "Hasil Kuis")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#E07030] text-white text-xs font-extrabold"}, quizResults.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => navigate('/favorit'), className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(Heart, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Cerita Favorit")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#062D2C]/15"}, favorites.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => navigate('/koleksi'), className: "w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer"}, React.createElement("span", {className: "flex items-center gap-3.5"}, React.createElement(List, {className: "w-5 h-5 stroke-[2.4]"}), React.createElement("span", null, "Koleksi")), React.createElement("span", {className: "flex items-center gap-1 text-sm font-bold"}, React.createElement("span", {className: "px-2 py-0.5 rounded-full bg-[#062D2C]/15"}, collections.length), React.createElement(ChevronRight, {className: "w-4 h-4"}))), React.createElement("button", {type: "button", onClick: () => setActiveSection('riwayat'), className: `w-full min-h-[54px] px-5 py-3.5 flex items-center justify-between font-heading font-extrabold text-base hover:bg-[#159A95] transition-colors cursor-pointer ${
@@ -10182,7 +10927,9 @@ function StoryDetailPage() {
                 : 'bg-[#005E5C]/90 border-white/20 text-white hover:bg-white/15'
             }`}, React.createElement(Bookmark, {className: `w-4 h-4 ${inCol ? 'fill-[#052625]' : ''}`}), React.createElement("span", null, inCol ? 'Tersimpan di Koleksi' : '+ Koleksi')))), React.createElement("main", {className: "flex-1 w-full max-w-[1000px] mx-auto px-4 sm:px-6 pt-2 pb-8"}, React.createElement("div", {className: "bg-[#005E5C]/75 backdrop-blur-md border-2 border-[#1FAFAA]/40 rounded-[32px] p-5 sm:p-8 shadow-2xl grid grid-cols-1 md:grid-cols-12 gap-6 sm:gap-8 items-center"}, React.createElement("div", {className: "md:col-span-5 lg:col-span-5"}, React.createElement("div", {className: "w-full max-w-[340px] mx-auto aspect-square rounded-[26px] overflow-hidden shadow-[0_12px_30px_rgba(0,0,0,0.4)] border-4 border-[#1FAFAA]/50 relative"}, React.createElement(StoryIllustration, {variant: story.cover, title: story.judul, alt: story.coverAlt || story.judul, showCoverTitle: true, sizeVariant: "lg", fit: "cover", loading: "eager", objectPosition: story.objectPosition || 'center center'}), isUserStory && (
                 React.createElement("div", {className: "sub-chip absolute bottom-3 left-3 px-3 py-1 rounded-full bg-[#E07030] text-white shadow-md"}, "Buatanku (", story.status === 'terbit' ? 'Terbit' : 'Draf', ")")
-              ))), React.createElement("div", {className: "md:col-span-7 lg:col-span-7 flex flex-col text-left"}, React.createElement("h1", {className: "font-heading font-extrabold text-2xl sm:text-3xl lg:text-4xl text-[#FFE9B0] leading-tight"}, story.judul), React.createElement("div", {className: "sub-chip mt-3 flex flex-wrap items-center justify-between sm:justify-start gap-2 sm:gap-4 py-2.5 px-4 rounded-2xl bg-[#007A78] border border-[#1FAFAA]/40 text-[#FFE9B0]"}, React.createElement("span", null, story.kategori), React.createElement("span", {className: "text-white/40"}, "•"), React.createElement("span", null, story.usia), React.createElement("span", {className: "text-white/40"}, "•"), React.createElement("span", null, story.pages.length, " Halaman")), React.createElement("div", {className: "mt-5"}, React.createElement("h2", {className: "sub-label uppercase tracking-wider text-[#1FAFAA] mb-1.5"}, "Sinopsis Cerita"), React.createElement("p", {className: "sub-body text-white/95"}, story.sinopsis || 'Mari ikuti kisah seru dan penuh makna ini bersama-sama!')), progress && (
+              ))), React.createElement("div", {className: "md:col-span-7 lg:col-span-7 flex flex-col text-left"}, React.createElement("h1", {className: "font-heading font-extrabold text-2xl sm:text-3xl lg:text-4xl text-[#FFE9B0] leading-tight"}, story.judul), React.createElement("div", {className: "sub-chip mt-3 flex flex-wrap items-center justify-between sm:justify-start gap-2 sm:gap-4 py-2.5 px-4 rounded-2xl bg-[#007A78] border border-[#1FAFAA]/40 text-[#FFE9B0]"}, React.createElement("span", null, story.kategori), React.createElement("span", {className: "text-white/40"}, "•"), React.createElement("span", null, story.usia), React.createElement("span", {className: "text-white/40"}, "•"), React.createElement("span", null, story.pages.length, " Halaman")), React.createElement("div", {className: "mt-5"}, React.createElement("h2", {className: "sub-label uppercase tracking-wider text-[#1FAFAA] mb-1.5"}, "Sinopsis Cerita"), React.createElement("p", {className: "sub-body text-white/95"}, story.sinopsis || 'Mari ikuti kisah seru dan penuh makna ini bersama-sama!')), (story.pesanMoral || story.moral_value) && (
+              React.createElement("div", {className: "mt-4 rounded-2xl bg-[#007A78]/90 border border-[#FFE9B0]/40 p-3.5"}, React.createElement("span", {className: "sub-label block uppercase tracking-wider text-[#FFE9B0] mb-1"}, "✨ Pesan Moral Cerita"), React.createElement("p", {className: "sub-help text-white/95"}, story.pesanMoral || story.moral_value))
+            ), progress && (
               React.createElement("div", {className: "sub-help mt-4 inline-flex items-center gap-2 text-[#FFE9B0] bg-white/10 px-3.5 py-2 rounded-xl self-start"}, React.createElement(Sparkles, {className: "w-4 h-4"}), React.createElement("span", null, progress.completed
                     ? 'Kamu sudah pernah menyelesaikan cerita ini!'
                     : `Terakhir dibaca sampai Halaman ${progress.lastPage} dari ${progress.totalPages}`))
@@ -10595,7 +11342,548 @@ function SearchPage() {
 }
 
 
+// === MODULE: src/pages/AdminDashboardPage.jsx ===
+
+
+
+
+
+
+
+
+
+const ADMIN_CATEGORIES = [
+  'Petualangan',
+  'Persahabatan',
+  'Keluarga',
+  'Alam/Lingkungan',
+  'Fantasi',
+];
+
+const ADMIN_AGES = ['4-5 Tahun', '5-6 Tahun'];
+
+const PRESET_COVER_OPTIONS = [
+  { value: '/stories/kucing-hutan/cover.webp', label: 'Sampul: Kucing di Hutan Ajaib (.webp)' },
+  { value: '/stories/langit-balon/cover.webp', label: 'Sampul: Langit & Balon Warna-Warni (.webp)' },
+  { value: 'cat-magic-forest', label: 'Ilustrasi SVG: Hutan Kucing' },
+  { value: 'sky-balloons', label: 'Ilustrasi SVG: Balon Udara Ceria' },
+  { value: 'rabbit-garden', label: 'Ilustrasi SVG: Kebun Kelinci' },
+  { value: 'family-home', label: 'Ilustrasi SVG: Rumah Hangat' },
+  { value: 'river-clean', label: 'Ilustrasi SVG: Sungai Jernih' },
+  { value: 'cloud-ship', label: 'Ilustrasi SVG: Perahu Awan' },
+];
+
+function formatDateId(isoStr) {
+  try {
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return 'Baru saja';
+    return d.toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch {
+    return 'Baru saja';
+  }
+}
+
+function createEmptyStoryForm() {
+  return {
+    id: '',
+    title: '',
+    slug: '',
+    category: 'Petualangan',
+    age_category: '4-5 Tahun',
+    cover_url: '/stories/kucing-hutan/cover.webp',
+    synopsis: '',
+    moral_value: '',
+    pages: [
+      {
+        halaman: 1,
+        gambar: '/stories/kucing-hutan/halaman-1.webp',
+        teks: '',
+      },
+    ],
+  };
+}
+
+/**
+ * Halaman Dashboard Admin BUKUNA (/admin) — src/pages/AdminDashboardPage.jsx
+ * - Protected Route: hanya dapat diakses oleh user yang login dan memiliki role === 'ADMIN'
+ *   pada tabel `profiles` Supabase. Jika belum login atau bukan ADMIN, otomatis redirect ke `/`.
+ * - Menggunakan 100% palet warna teal gelap (#007A78, #005E5C), teal terang (#1FAFAA),
+ *   aksen oranye (#E07030), dan krem lembut (#FFE9B0) yang sama persis dengan web utama BUKUNA.
+ * - 4 Tab Utama:
+ *   1. Ringkasan (Overview)
+ *   2. Kelola Koleksi Cerita (CRUD tabel `stories` Supabase + sinkron ke web utama)
+ *   3. Moderasi Ulasan & Komentar (tabel `story_comments` join `profiles` + tombol Hapus Komentar)
+ *   4. Daftar Pengguna (tabel `profiles`)
+ */
+function AdminDashboardPage() {
+  const {
+    user,
+    isAdmin,
+    authLoading,
+    stories,
+    catalogStories,
+    refreshCatalogStories,
+    showToast,
+  } = useBukuna();
+
+  const [activeTab, setActiveTab] = useState('ringkasan'); // 'ringkasan' | 'cerita' | 'moderasi' | 'pengguna'
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [commentsList, setCommentsList] = useState([]);
+  const [profilesList, setProfilesList] = useState([]);
+  const hasFetchedOnceRef = useRef(false);
+  const catalogStoriesRef = useRef(catalogStories);
+  const storiesRef = useRef(stories);
+
+  useEffect(() => {
+    catalogStoriesRef.current = catalogStories;
+    storiesRef.current = stories;
+  }, [catalogStories, stories]);
+
+  // State Modal Tambah / Edit Cerita
+  const [storyModalOpen, setStoryModalOpen] = useState(false);
+  const [isEditingStory, setIsEditingStory] = useState(false);
+  const [storyForm, setStoryForm] = useState(() => createEmptyStoryForm());
+  const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
+  const [storyFormError, setStoryFormError] = useState('');
+  const [savingStory, setSavingStory] = useState(false);
+
+  // State Konfirmasi Hapus Cerita & Hapus Komentar
+  const [confirmDeleteStory, setConfirmDeleteStory] = useState(null);
+  const [deletingStoryId, setDeletingStoryId] = useState(null);
+  const [confirmDeleteComment, setConfirmDeleteComment] = useState(null);
+  const [deletingCommentId, setDeletingCommentId] = useState(null);
+
+  const loadAllAdminData = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!silent && !hasFetchedOnceRef.current) {
+        setInitialLoading(true);
+      } else {
+        setRefreshing(true);
+      }
+
+      try {
+        const [catRes, profRes] = await Promise.all([
+          refreshCatalogStories(),
+          fetchAllProfilesForAdmin(),
+        ]);
+
+        const activeStories =
+          (catRes && Array.isArray(catRes.stories) && catRes.stories) ||
+          catalogStoriesRef.current ||
+          storiesRef.current;
+
+        const cmtRes = await fetchAllCommentsForAdmin(activeStories);
+
+        if (profRes && Array.isArray(profRes.profiles)) {
+          setProfilesList(profRes.profiles);
+        }
+        if (cmtRes && Array.isArray(cmtRes.comments)) {
+          setCommentsList(cmtRes.comments);
+        }
+        hasFetchedOnceRef.current = true;
+      } finally {
+        setInitialLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [refreshCatalogStories]
+  );
+
+  // Ambil data cukup SATU KALI saat halaman /admin pertama kali dimuat (mount)
+  useEffect(() => {
+    if (!authLoading && user && isAdmin && !hasFetchedOnceRef.current) {
+      loadAllAdminData({ silent: false });
+    }
+  }, [authLoading, user, isAdmin, loadAllAdminData]);
+
+  // Hitung statistik untuk Tab 1: Ringkasan (Overview)
+  const overviewStats = useMemo(() => {
+    const totalStories = Array.isArray(catalogStories) ? catalogStories.length : 0;
+    const totalUsers = Array.isArray(profilesList) ? profilesList.length : 0;
+    const totalCommentsAndReplies = Array.isArray(commentsList)
+      ? commentsList.length
+      : 0;
+
+    const topLevelWithRating = (commentsList || []).filter(
+      (c) => !c.parent_id && Number(c.rating) >= 1
+    );
+    const avgRating =
+      topLevelWithRating.length > 0
+        ? (
+            topLevelWithRating.reduce(
+              (acc, item) => acc + (Number(item.rating) || 5),
+              0
+            ) / topLevelWithRating.length
+          ).toFixed(1)
+        : '5.0';
+
+    return {
+      totalStories,
+      totalUsers,
+      totalCommentsAndReplies,
+      avgRating,
+      topLevelReviewsCount: topLevelWithRating.length,
+    };
+  }, [catalogStories, profilesList, commentsList]);
+
+  // 1. KEAMANAN AKSES (PROTECTED ROUTE):
+  // Tunggu pemeriksaan sesi selesai; jika belum login atau bukan ADMIN, redirect otomatis ke '/'
+  if (authLoading) {
+    return (
+      React.createElement("div", {className: "bukuna-doodle-bg min-h-screen flex flex-col items-center justify-center p-6 text-center"}, React.createElement("div", {className: "bg-[#005E5C]/90 border-2 border-[#1FAFAA] rounded-[32px] p-8 shadow-2xl max-w-md w-full animate-pulse"}, React.createElement(Sparkles, {className: "w-12 h-12 text-[#FFE9B0] mx-auto mb-3"}), React.createElement("h1", {className: "font-heading font-extrabold text-2xl text-[#FFE9B0]"}, "Memeriksa Akses Admin..."), React.createElement("p", {className: "sub-section text-white/85 mt-1"}, "Mohon tunggu sebentar, sedang memverifikasi profil Anda.")))
+    );
+  }
+
+  if (!user || !isAdmin) {
+    return React.createElement(Navigate, {to: "/", replace: true});
+  }
+
+  // Handler Buka Modal Tambah Cerita Baru
+  const handleOpenAddStory = () => {
+    setIsEditingStory(false);
+    setSlugManuallyEdited(false);
+    setStoryFormError('');
+    setStoryForm(createEmptyStoryForm());
+    setStoryModalOpen(true);
+  };
+
+  // Handler Buka Modal Edit Cerita
+  const handleOpenEditStory = (story) => {
+    setIsEditingStory(true);
+    setSlugManuallyEdited(true);
+    setStoryFormError('');
+    const existingPages =
+      Array.isArray(story.pages) && story.pages.length > 0
+        ? story.pages.map((p, idx) => ({
+            halaman: idx + 1,
+            gambar: p.gambar || story.cover || '/stories/kucing-hutan/cover.webp',
+            teks: p.teks || '',
+          }))
+        : [
+            {
+              halaman: 1,
+              gambar: story.cover || '/stories/kucing-hutan/cover.webp',
+              teks: story.sinopsis || '',
+            },
+          ];
+
+    setStoryForm({
+      id: story.id,
+      title: story.judul || story.title || '',
+      slug: story.slug || story.id || '',
+      category: story.kategori || story.category || 'Petualangan',
+      age_category: story.usia || story.age_category || '4-5 Tahun',
+      cover_url: story.cover || story.cover_url || '/stories/kucing-hutan/cover.webp',
+      synopsis: story.sinopsis || story.synopsis || '',
+      moral_value: story.pesanMoral || story.moral_value || '',
+      pages: existingPages,
+    });
+    setStoryModalOpen(true);
+  };
+
+  const handleTitleChange = (e) => {
+    const nextTitle = e.target.value;
+    setStoryForm((prev) => ({
+      ...prev,
+      title: nextTitle,
+      slug: slugManuallyEdited ? prev.slug : slugifyStoryTitle(nextTitle),
+    }));
+  };
+
+  const handleSlugChange = (e) => {
+    setSlugManuallyEdited(true);
+    setStoryForm((prev) => ({
+      ...prev,
+      slug: slugifyStoryTitle(e.target.value),
+    }));
+  };
+
+  const handlePageFieldChange = (pageIdx, field, val) => {
+    setStoryForm((prev) => ({
+      ...prev,
+      pages: prev.pages.map((p, idx) =>
+        idx === pageIdx ? { ...p, [field]: val } : p
+      ),
+    }));
+  };
+
+  const handleAddFormPage = () => {
+    setStoryForm((prev) => {
+      if (prev.pages.length >= 20) return prev;
+      return {
+        ...prev,
+        pages: [
+          ...prev.pages,
+          {
+            halaman: prev.pages.length + 1,
+            gambar: prev.cover_url || '/stories/kucing-hutan/cover.webp',
+            teks: '',
+          },
+        ],
+      };
+    });
+  };
+
+  const handleRemoveFormPage = (pageIdx) => {
+    setStoryForm((prev) => {
+      if (prev.pages.length <= 1) return prev;
+      const nextPages = prev.pages
+        .filter((_, idx) => idx !== pageIdx)
+        .map((p, i) => ({ ...p, halaman: i + 1 }));
+      return {
+        ...prev,
+        pages: nextPages,
+      };
+    });
+  };
+
+  const handleSaveStorySubmit = async (e) => {
+    e.preventDefault();
+    setStoryFormError('');
+
+    const cleanTitle = (storyForm.title || '').trim();
+    if (!cleanTitle) {
+      setStoryFormError('Judul cerita wajib diisi.');
+      return;
+    }
+
+    const cleanSlug = (storyForm.slug || slugifyStoryTitle(cleanTitle)).trim();
+    if (!cleanSlug) {
+      setStoryFormError('Slug cerita tidak boleh kosong.');
+      return;
+    }
+
+    const hasPageText = storyForm.pages.some((p) => p.teks && p.teks.trim());
+    if (!hasPageText) {
+      setStoryFormError('Mohon isi teks cerita minimal pada Halaman 1.');
+      return;
+    }
+
+    setSavingStory(true);
+    try {
+      const payload = {
+        ...storyForm,
+        id: isEditingStory && storyForm.id ? storyForm.id : cleanSlug,
+        slug: cleanSlug,
+        title: cleanTitle,
+      };
+
+      const res = await upsertCatalogStory(payload, isEditingStory);
+      if (!res || !res.ok) {
+        setStoryFormError(
+          (res && res.error) || 'Gagal menyimpan cerita ke database.'
+        );
+        return;
+      }
+
+      await refreshCatalogStories();
+      setStoryModalOpen(false);
+      showToast(
+        isEditingStory
+          ? `Cerita "${cleanTitle}" berhasil diperbarui!`
+          : `Cerita baru "${cleanTitle}" berhasil ditambahkan ke koleksi!`
+      );
+    } finally {
+      setSavingStory(false);
+    }
+  };
+
+  const handleConfirmDeleteStory = async () => {
+    if (!confirmDeleteStory) return;
+    const target = confirmDeleteStory;
+    setDeletingStoryId(target.id);
+    try {
+      const res = await deleteCatalogStory(target.id);
+      if (!res || !res.ok) {
+        showToast((res && res.error) || 'Gagal menghapus cerita.');
+        return;
+      }
+      setConfirmDeleteStory(null);
+      await refreshCatalogStories();
+      showToast(`Cerita "${target.judul || target.title}" telah dihapus.`);
+    } finally {
+      setDeletingStoryId(null);
+    }
+  };
+
+  const handleConfirmDeleteComment = async () => {
+    if (!confirmDeleteComment) return;
+    const target = confirmDeleteComment;
+    setDeletingCommentId(target.id);
+    try {
+      const res = await adminDeleteComment(target.id);
+      if (!res || !res.ok) {
+        showToast((res && res.error) || 'Gagal menghapus komentar.');
+        return;
+      }
+      setCommentsList((prev) =>
+        prev.filter((c) => c.id !== target.id && c.parent_id !== target.id)
+      );
+      setConfirmDeleteComment(null);
+      showToast('Komentar berhasil dihapus oleh Admin.');
+    } finally {
+      setDeletingCommentId(null);
+    }
+  };
+
+  const tabs = [
+    {
+      id: 'ringkasan',
+      label: 'Ringkasan',
+      badge: null,
+      icon: Sparkles,
+    },
+    {
+      id: 'cerita',
+      label: 'Kelola Koleksi Cerita',
+      badge: overviewStats.totalStories,
+      icon: BookOpen,
+    },
+    {
+      id: 'moderasi',
+      label: 'Moderasi Ulasan & Komentar',
+      badge: overviewStats.totalCommentsAndReplies,
+      icon: ShieldCheck,
+    },
+    {
+      id: 'pengguna',
+      label: 'Daftar Pengguna',
+      badge: overviewStats.totalUsers,
+      icon: User,
+    },
+  ];
+
+  return (
+    React.createElement("div", {className: "bukuna-doodle-bg min-h-screen overflow-y-scroll flex flex-col pb-16"}, React.createElement("header", {className: "sticky top-0 z-30 w-full bg-[#007A78]/95 backdrop-blur-md border-b border-white/15"}, React.createElement("div", {className: "max-w-[1200px] mx-auto px-4 sm:px-6 h-16 sm:h-18 flex items-center justify-between gap-3"}, React.createElement("div", {className: "flex items-center gap-3"}, React.createElement(Link, {to: "/beranda", className: "inline-flex items-center py-1 rounded-xl focus:outline-none", "aria-label": "Ke Beranda Bukuna"}, React.createElement(Logo, {size: "sm"})), React.createElement("span", {className: "hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#062D2C] border border-[#FFE9B0]/60 text-[#FFE9B0] font-heading font-extrabold text-xs uppercase tracking-wider"}, React.createElement(ShieldCheck, {className: "w-3.5 h-3.5 text-[#E07030]"}), React.createElement("span", null, "Dashboard Admin"))), React.createElement("div", {className: "flex items-center gap-2 sm:gap-3"}, React.createElement("button", {type: "button", onClick: () => loadAllAdminData({ silent: true }), disabled: refreshing, title: "Muat ulang data Supabase", className: "min-h-[42px] px-3.5 py-1.5 rounded-full bg-[#005E5C] hover:bg-[#1FAFAA] text-[#FFE9B0] hover:text-[#052625] border border-[#1FAFAA]/60 font-heading font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-colors cursor-pointer"}, React.createElement(RefreshCw, {className: `w-4 h-4 ${refreshing ? 'animate-spin' : ''}`}), React.createElement("span", {className: "hidden sm:inline"}, refreshing ? 'Menyegarkan...' : 'Segarkan Data')), React.createElement(Link, {to: "/beranda", className: "min-h-[42px] px-4 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white border-2 border-[#FFE9B0] font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 shadow-md transition-colors"}, React.createElement(Home, {className: "w-4 h-4"}), React.createElement("span", null, "Kembali ke Web Utama"))))), React.createElement("main", {className: "flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-6 pt-5 pb-10 min-h-[760px]"}, React.createElement("section", {className: "bg-[#005E5C]/90 border-2 border-[#1FAFAA]/60 rounded-[32px] p-5 sm:p-7 shadow-2xl mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4"}, React.createElement("div", null, React.createElement("div", {className: "inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-[#E07030] text-white text-xs font-extrabold uppercase tracking-wider mb-2 shadow-sm"}, React.createElement(ShieldCheck, {className: "w-4 h-4"}), React.createElement("span", null, "Panel Pengelola Resmi BUKUNA")), React.createElement(ColorfulTitle, {as: "h1", text: "Dashboard Admin Bukuna", className: "font-heading font-extrabold text-2xl sm:text-3xl lg:text-4xl text-[#FFE9B0]"}), React.createElement("p", {className: "sub-section text-white/90 mt-1"}, "Selamat bertugas, ", React.createElement("strong", {className: "text-[#FFE9B0]"}, user.nama || user.full_name), "! Kelola koleksi cerita anak, moderasi diskusi orang tua, dan pantau pengguna terdaftar.")), React.createElement("div", {className: "flex flex-wrap items-center gap-2.5 shrink-0"}, React.createElement("button", {type: "button", onClick: handleOpenAddStory, className: "min-h-[48px] px-5 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white border-2 border-[#FFE9B0] font-heading font-extrabold text-sm inline-flex items-center gap-2 shadow-lg transition-all cursor-pointer"}, React.createElement(Plus, {className: "w-5 h-5"}), React.createElement("span", null, "+ Tambah Cerita Baru")))), React.createElement("nav", {"aria-label": "Navigasi Tab Dashboard Admin", className: "mb-6 bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-[28px] p-2 shadow-xl flex flex-wrap items-center gap-2"}, tabs.map((tab) => {
+            const TabIcon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              React.createElement("button", {key: tab.id, type: "button", onClick: () => setActiveTab(tab.id), className: `flex-1 min-w-[160px] min-h-[48px] px-4 py-2.5 rounded-full font-heading font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer border-2 ${
+                  active
+                    ? 'bg-[#E07030] border-[#FFE9B0] text-white shadow-lg'
+                    : 'bg-[#062D2C]/70 border-transparent text-[#FFE9B0] hover:bg-[#1FAFAA] hover:text-[#052625]'
+                }`}, React.createElement(TabIcon, {className: "w-4 h-4 shrink-0"}), React.createElement("span", null, tab.label), tab.badge !== null && (
+                  React.createElement("span", {className: `px-2 py-0.5 rounded-full text-xs font-extrabold ${
+                      active
+                        ? 'bg-[#062D2C] text-[#FFE9B0]'
+                        : 'bg-white/15 text-white'
+                    }`}, tab.badge)
+                ))
+            );
+          })), activeTab === 'ringkasan' && (
+          React.createElement("section", {"aria-label": "Ringkasan Statistik Bukuna", className: "space-y-6"}, React.createElement("div", {className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5"}, React.createElement("div", {className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/60 rounded-[28px] p-5 shadow-xl flex flex-col justify-between"}, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-3"}, React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#E07030] text-white"}, "Koleksi Cerita"), React.createElement("div", {className: "w-11 h-11 rounded-2xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center shadow-inner"}, React.createElement(BookOpen, {className: "w-6 h-6"}))), React.createElement("div", null, React.createElement("div", {className: "font-heading font-extrabold text-4xl text-[#FFE9B0]"}, overviewStats.totalStories), React.createElement("p", {className: "sub-label text-white/90 mt-1"}, "Buku cerita aktif di katalog utama")), React.createElement("button", {type: "button", onClick: () => setActiveTab('cerita'), className: "mt-4 text-xs font-extrabold text-[#FFE9B0] hover:underline text-left cursor-pointer"}, "Kelola Koleksi Cerita →")), React.createElement("div", {className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/60 rounded-[28px] p-5 shadow-xl flex flex-col justify-between"}, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-3"}, React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#1FAFAA] text-[#052625]"}, "Pengguna"), React.createElement("div", {className: "w-11 h-11 rounded-2xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center shadow-inner"}, React.createElement(User, {className: "w-6 h-6"}))), React.createElement("div", null, React.createElement("div", {className: "font-heading font-extrabold text-4xl text-[#FFE9B0]"}, overviewStats.totalUsers), React.createElement("p", {className: "sub-label text-white/90 mt-1"}, "Akun Guru, Orang Tua &amp; Admin")), React.createElement("button", {type: "button", onClick: () => setActiveTab('pengguna'), className: "mt-4 text-xs font-extrabold text-[#FFE9B0] hover:underline text-left cursor-pointer"}, "Lihat Daftar Pengguna →")), React.createElement("div", {className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/60 rounded-[28px] p-5 shadow-xl flex flex-col justify-between"}, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-3"}, React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#E07030] text-white"}, "Diskusi &amp; Ulasan"), React.createElement("div", {className: "w-11 h-11 rounded-2xl bg-[#FFE9B0] text-[#062D2C] flex items-center justify-center shadow-inner"}, React.createElement(ShieldCheck, {className: "w-6 h-6"}))), React.createElement("div", null, React.createElement("div", {className: "font-heading font-extrabold text-4xl text-[#FFE9B0]"}, overviewStats.totalCommentsAndReplies), React.createElement("p", {className: "sub-label text-white/90 mt-1"}, "Ulasan &amp; balasan orang tua masuk")), React.createElement("button", {type: "button", onClick: () => setActiveTab('moderasi'), className: "mt-4 text-xs font-extrabold text-[#FFE9B0] hover:underline text-left cursor-pointer"}, "Moderasi Komentar →")), React.createElement("div", {className: "bg-[#005E5C]/95 border-2 border-[#FFE9B0]/70 rounded-[28px] p-5 shadow-xl flex flex-col justify-between"}, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-3"}, React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#FFE9B0] text-[#052625]"}, "Rating Bintang"), React.createElement("div", {className: "w-11 h-11 rounded-2xl bg-[#E07030] text-white flex items-center justify-center shadow-inner"}, React.createElement(Star, {className: "w-6 h-6 fill-[#FFE9B0] text-[#FFE9B0]"}))), React.createElement("div", null, React.createElement("div", {className: "font-heading font-extrabold text-4xl text-[#FFE9B0] flex items-baseline gap-1.5"}, React.createElement("span", null, overviewStats.avgRating), React.createElement("span", {className: "text-base text-white/80"}, "/ 5.0")), React.createElement("p", {className: "sub-label text-white/90 mt-1"}, "Dari ", overviewStats.topLevelReviewsCount, " ulasan utama cerita")), React.createElement("span", {className: "mt-4 text-xs font-extrabold text-[#1FAFAA]"}, "★ Kepuasan Pendamping Anak"))), React.createElement("div", {className: "grid grid-cols-1 lg:grid-cols-12 gap-6"}, React.createElement("div", {className: "lg:col-span-6 bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-[30px] p-5 sm:p-6 shadow-xl"}, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-4"}, React.createElement("h2", {className: "font-heading font-extrabold text-xl text-[#FFE9B0]"}, "📚 Koleksi Cerita Aktif"), React.createElement("button", {type: "button", onClick: () => setActiveTab('cerita'), className: "sub-chip px-3 py-1 rounded-full bg-[#1FAFAA] text-[#052625] font-extrabold cursor-pointer"}, "Kelola Semua")), React.createElement("div", {className: "space-y-3"}, (catalogStories || []).slice(0, 4).map((story) => (
+                    React.createElement("div", {key: story.id, className: "bg-[#062D2C]/85 border border-[#1FAFAA]/40 rounded-2xl p-3 flex items-center justify-between gap-3"}, React.createElement("div", {className: "flex items-center gap-3 min-w-0"}, React.createElement("div", {className: "w-12 h-12 rounded-xl overflow-hidden shrink-0 border border-[#FFE9B0]/40 bg-[#007A78]"}, React.createElement(StoryIllustration, {variant: story.cover, title: story.judul, showCoverTitle: false, sizeVariant: "sm"})), React.createElement("div", {className: "min-w-0"}, React.createElement("h3", {className: "font-heading font-extrabold text-sm sm:text-base text-[#FFE9B0] truncate"}, story.judul), React.createElement("p", {className: "sub-help text-white/80"}, story.kategori, " • ", story.usia, " • ", story.pages?.length || 1, " Hal."))), React.createElement("button", {type: "button", onClick: () => handleOpenEditStory(story), className: "min-h-[36px] px-3 py-1 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-bold text-xs inline-flex items-center gap-1 shrink-0 cursor-pointer"}, React.createElement(Edit3, {className: "w-3.5 h-3.5"}), React.createElement("span", null, "Edit")))
+                  )))), React.createElement("div", {className: "lg:col-span-6 bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-[30px] p-5 sm:p-6 shadow-xl"}, React.createElement("div", {className: "flex items-center justify-between gap-2 mb-4"}, React.createElement("h2", {className: "font-heading font-extrabold text-xl text-[#FFE9B0]"}, "💬 Ulasan &amp; Balasan Terbaru"), React.createElement("button", {type: "button", onClick: () => setActiveTab('moderasi'), className: "sub-chip px-3 py-1 rounded-full bg-[#1FAFAA] text-[#052625] font-extrabold cursor-pointer"}, "Moderasi Semua")), commentsList.length > 0 ? (
+                  React.createElement("div", {className: "space-y-3"}, commentsList.slice(0, 4).map((cmt) => (
+                      React.createElement("div", {key: cmt.id, className: "bg-[#062D2C]/85 border border-[#1FAFAA]/40 rounded-2xl p-3.5 flex flex-col gap-1.5"}, React.createElement("div", {className: "flex items-center justify-between gap-2"}, React.createElement("span", {className: "font-heading font-extrabold text-sm text-[#FFE9B0]"}, cmt.author_name), React.createElement("span", {className: "text-xs font-bold text-[#1FAFAA] truncate max-w-[50%]"}, cmt.story_title)), React.createElement("p", {className: "sub-help text-white/90 line-clamp-2"}, cmt.comment))
+                    )))
+                ) : (
+                  React.createElement("div", {className: "py-8 text-center text-white/80"}, "Belum ada ulasan atau komentar yang masuk.")
+                ))))
+        ), activeTab === 'cerita' && (
+          React.createElement("section", {"aria-label": "Kelola Koleksi Cerita", className: "space-y-5"}, React.createElement("div", {className: "bg-[#1FAFAA] text-[#052625] rounded-[28px] p-5 sm:p-6 border-2 border-[#FFE9B0] shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4"}, React.createElement("div", null, React.createElement("h2", {className: "font-heading font-extrabold text-xl sm:text-2xl text-[#052625]"}, "Katalog Koleksi Cerita BUKUNA (", catalogStories.length, " Cerita)"), React.createElement("p", {className: "sub-section text-[#052625]/85 mt-0.5"}, "Setiap cerita yang ditambah atau diubah di sini langsung tersinkron ke Beranda, Koleksi, dan Halaman Membaca.")), React.createElement("button", {type: "button", onClick: handleOpenAddStory, className: "min-h-[48px] px-6 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white border-2 border-[#FFE9B0] font-heading font-extrabold text-sm sm:text-base inline-flex items-center justify-center gap-2 shadow-lg shrink-0 cursor-pointer"}, React.createElement(Plus, {className: "w-5 h-5"}), React.createElement("span", null, "+ Tambah Cerita Baru"))), initialLoading && catalogStories.length === 0 ? (
+              React.createElement("div", {className: "py-12 text-center bg-[#005E5C]/85 rounded-[30px] border-2 border-[#1FAFAA]/40"}, React.createElement(Sparkles, {className: "w-10 h-10 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("p", {className: "font-heading font-bold text-lg text-[#FFE9B0]"}, "Memuat katalog cerita dari Supabase..."))
+            ) : (
+              React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"}, catalogStories.map((story) => {
+                  const pageCount = Array.isArray(story.pages)
+                    ? story.pages.length
+                    : 1;
+
+                  return (
+                    React.createElement("article", {key: story.id, className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/60 rounded-[28px] overflow-hidden shadow-xl flex flex-col justify-between"}, React.createElement("div", null, React.createElement("div", {className: "relative aspect-[4/3.4] w-full bg-[#007A78] overflow-hidden"}, React.createElement(StoryIllustration, {variant: story.cover, title: story.judul, alt: story.coverAlt || story.judul, showCoverTitle: false, sizeVariant: "sm", className: "w-full h-full"}), React.createElement("div", {className: "absolute top-3 left-3 right-3 flex items-center justify-between gap-2"}, React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#062D2C]/90 text-[#FFE9B0] border border-[#FFE9B0]/50"}, story.kategori), React.createElement("span", {className: "sub-chip px-3 py-1 rounded-full bg-[#E07030] text-white shadow-md"}, story.usia))), React.createElement("div", {className: "p-4 sm:p-5"}, React.createElement("span", {className: "text-xs font-bold text-[#1FAFAA] block truncate"}, "Slug: /", story.slug || story.id, " • ", pageCount, " Halaman"), React.createElement("h3", {className: "mt-1 font-heading font-extrabold text-xl text-[#FFE9B0] line-clamp-1"}, story.judul), React.createElement("p", {className: "sub-help mt-1.5 text-white/90 line-clamp-2"}, story.sinopsis), (story.pesanMoral || story.moral_value) && (
+                            React.createElement("p", {className: "mt-2 text-xs font-bold text-[#FFE9B0] bg-[#062D2C]/80 px-3 py-1.5 rounded-xl line-clamp-2"}, "✨ Pesan Moral: ", story.pesanMoral || story.moral_value)
+                          ))), React.createElement("div", {className: "p-4 sm:p-5 pt-0 flex items-center justify-between gap-2"}, React.createElement(Link, {to: `/cerita/${story.id}`, className: "min-h-[40px] px-3.5 py-1.5 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] font-heading font-extrabold text-xs inline-flex items-center gap-1.5"}, React.createElement(Eye, {className: "w-3.5 h-3.5"}), React.createElement("span", null, "Lihat")), React.createElement("div", {className: "flex items-center gap-2"}, React.createElement("button", {type: "button", onClick: () => handleOpenEditStory(story), className: "min-h-[40px] px-3.5 py-1.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer"}, React.createElement(Edit3, {className: "w-3.5 h-3.5"}), React.createElement("span", null, "Edit Cerita")), React.createElement("button", {type: "button", onClick: () => setConfirmDeleteStory(story), "aria-label": `Hapus cerita ${story.judul}`, className: "min-h-[40px] px-3 py-1.5 rounded-full bg-red-500/20 hover:bg-red-500/35 border border-red-300/40 text-red-300 font-bold text-xs inline-flex items-center gap-1 cursor-pointer"}, React.createElement(Trash2, {className: "w-3.5 h-3.5"}), React.createElement("span", null, "Hapus")))))
+                  );
+                }))
+            ))
+        ), activeTab === 'moderasi' && (
+          React.createElement("section", {"aria-label": "Moderasi Ulasan dan Komentar", className: "space-y-5"}, React.createElement("div", {className: "bg-[#005E5C]/95 border-2 border-[#FFE9B0]/60 rounded-[28px] p-5 sm:p-6 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3"}, React.createElement("div", null, React.createElement("h2", {className: "font-heading font-extrabold text-xl sm:text-2xl text-[#FFE9B0]"}, "Moderasi Ulasan &amp; Balasan Komentar (", commentsList.length, ")"), React.createElement("p", {className: "sub-section text-white/90 mt-0.5"}, "Pantau seluruh komentar pada tabel ", React.createElement("code", {className: "text-[#FFE9B0]"}, "story_comments"), " dan hapus komentar yang tidak sesuai dengan aturan kesantunan ramah anak."))), initialLoading && commentsList.length === 0 ? (
+              React.createElement("div", {className: "py-12 text-center bg-[#005E5C]/85 rounded-[30px] border-2 border-[#1FAFAA]/40"}, React.createElement(Sparkles, {className: "w-10 h-10 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("p", {className: "font-heading font-bold text-lg text-[#FFE9B0]"}, "Memuat daftar komentar dari Supabase..."))
+            ) : commentsList.length > 0 ? (
+              React.createElement("div", {className: "space-y-3.5"}, commentsList.map((cmt) => {
+                  const isReply = Boolean(cmt.parent_id);
+                  const starCount = Math.max(1, Math.min(5, Number(cmt.rating) || 5));
+
+                  return (
+                    React.createElement("article", {key: cmt.id, className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/50 rounded-[26px] p-4 sm:p-5 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4"}, React.createElement("div", {className: "space-y-2 min-w-0 flex-1"}, React.createElement("div", {className: "flex flex-wrap items-center gap-2"}, React.createElement("span", {className: `px-3 py-0.5 rounded-full text-xs font-extrabold ${
+                              isReply
+                                ? 'bg-[#1FAFAA] text-[#052625]'
+                                : 'bg-[#E07030] text-white'
+                            }`}, isReply ? '↩ Balasan Komentar' : '★ Ulasan Utama'), React.createElement("span", {className: "font-heading font-extrabold text-base text-[#FFE9B0]"}, cmt.author_name), React.createElement("span", {className: "px-2.5 py-0.5 rounded-full bg-[#062D2C] text-[#1FAFAA] text-xs font-extrabold uppercase"}, cmt.author_role || 'GURU'), !isReply && (
+                            React.createElement("span", {className: "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#062D2C] text-[#FFE9B0] text-xs font-extrabold"}, React.createElement(Star, {className: "w-3.5 h-3.5 fill-[#FFE9B0]"}), React.createElement("span", null, starCount, "/5"))
+                          ), React.createElement("span", {className: "text-xs font-semibold text-white/75"}, "• ", formatDateId(cmt.created_at))), React.createElement("p", {className: "sub-body text-white/95"}, cmt.comment), React.createElement("div", {className: "text-xs font-bold text-[#FFE9B0]/90 flex flex-wrap items-center gap-2"}, React.createElement("span", null, "Cerita:"), React.createElement(Link, {to: `/cerita/${cmt.story_id}`, className: "px-2.5 py-0.5 rounded-full bg-white/10 hover:bg-white/20 text-[#FFE9B0] underline"}, cmt.story_title || cmt.story_id))), React.createElement("div", {className: "shrink-0 self-end sm:self-center"}, React.createElement("button", {type: "button", onClick: () => setConfirmDeleteComment(cmt), className: "min-h-[42px] px-4 py-2 rounded-full bg-red-500/20 hover:bg-red-500/40 border-2 border-red-300/60 text-red-200 font-heading font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 transition-colors cursor-pointer"}, React.createElement(Trash2, {className: "w-4 h-4"}), React.createElement("span", null, "Hapus Komentar"))))
+                  );
+                }))
+            ) : (
+              React.createElement("div", {className: "bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-[30px] p-10 text-center"}, React.createElement(ShieldCheck, {className: "w-12 h-12 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("h3", {className: "font-heading font-extrabold text-xl text-[#FFE9B0]"}, "Belum Ada Komentar Masuk"), React.createElement("p", {className: "sub-section text-white/85 mt-1"}, "Seluruh ulasan dan balasan yang ditulis orang tua atau guru akan tampil di sini."))
+            ))
+        ), activeTab === 'pengguna' && (
+          React.createElement("section", {"aria-label": "Daftar Pengguna Terdaftar", className: "space-y-5"}, React.createElement("div", {className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/60 rounded-[28px] p-5 sm:p-6 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3"}, React.createElement("div", null, React.createElement("h2", {className: "font-heading font-extrabold text-xl sm:text-2xl text-[#FFE9B0]"}, "Daftar Pengguna Terdaftar (", profilesList.length, " Akun)"), React.createElement("p", {className: "sub-section text-white/90 mt-0.5"}, "Data profil pendamping (Guru, Orang Tua, dan Admin) dari tabel ", React.createElement("code", {className: "text-[#FFE9B0]"}, "profiles"), " Supabase."))), initialLoading && profilesList.length === 0 ? (
+              React.createElement("div", {className: "py-12 text-center bg-[#005E5C]/85 rounded-[30px] border-2 border-[#1FAFAA]/40"}, React.createElement(Sparkles, {className: "w-10 h-10 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("p", {className: "font-heading font-bold text-lg text-[#FFE9B0]"}, "Memuat daftar pengguna dari Supabase..."))
+            ) : profilesList.length > 0 ? (
+              React.createElement("div", {className: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"}, profilesList.map((prof) => {
+                  const isProfAdmin = String(prof.role).toUpperCase() === 'ADMIN';
+                  return (
+                    React.createElement("div", {key: prof.id, className: "bg-[#005E5C]/95 border-2 border-[#1FAFAA]/50 rounded-[26px] p-5 shadow-lg flex items-center justify-between gap-3"}, React.createElement("div", {className: "flex items-center gap-3.5 min-w-0"}, React.createElement("div", {className: `w-12 h-12 rounded-2xl font-heading font-extrabold text-lg flex items-center justify-center shrink-0 shadow-md ${
+                            isProfAdmin
+                              ? 'bg-[#E07030] text-white border-2 border-[#FFE9B0]'
+                              : 'bg-[#FFE9B0] text-[#052625]'
+                          }`}, (prof.full_name || 'U').charAt(0).toUpperCase()), React.createElement("div", {className: "min-w-0"}, React.createElement("h3", {className: "font-heading font-extrabold text-base sm:text-lg text-[#FFE9B0] truncate"}, prof.full_name), React.createElement("p", {className: "sub-help text-white/80 flex items-center gap-1 mt-0.5"}, React.createElement(Clock, {className: "w-3.5 h-3.5 shrink-0"}), React.createElement("span", null, "Bergabung: ", formatDateId(prof.created_at))))), React.createElement("span", {className: `px-3 py-1 rounded-full font-heading font-extrabold text-xs uppercase tracking-wider shrink-0 shadow-sm ${
+                          isProfAdmin
+                            ? 'bg-[#E07030] text-white border border-[#FFE9B0]'
+                            : 'bg-[#1FAFAA] text-[#052625]'
+                        }`}, prof.role))
+                  );
+                }))
+            ) : (
+              React.createElement("div", {className: "bg-[#005E5C]/90 border-2 border-[#1FAFAA]/50 rounded-[30px] p-10 text-center"}, React.createElement(User, {className: "w-12 h-12 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("h3", {className: "font-heading font-extrabold text-xl text-[#FFE9B0]"}, "Belum Ada Pengguna Terdaftar"))
+            ))
+        )), storyModalOpen && (
+        React.createElement("div", {role: "dialog", "aria-modal": "true", "aria-labelledby": "modal-story-title", className: "fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 overflow-y-auto"}, React.createElement("div", {className: "w-full max-w-3xl bg-[#005E5C] border-4 border-[#FFE9B0] rounded-[32px] p-5 sm:p-7 shadow-2xl my-8 max-h-[90vh] overflow-y-auto"}, React.createElement("div", {className: "flex items-center justify-between gap-3 pb-4 border-b border-white/15"}, React.createElement("div", null, React.createElement("span", {className: "sub-chip px-3 py-0.5 rounded-full bg-[#E07030] text-white"}, isEditingStory ? 'Mode Edit Cerita' : 'Koleksi Cerita Baru'), React.createElement("h2", {id: "modal-story-title", className: "font-heading font-extrabold text-2xl text-[#FFE9B0] mt-1"}, isEditingStory ? 'Edit Cerita Koleksi' : 'Tambah Cerita Baru')), React.createElement("button", {type: "button", onClick: () => setStoryModalOpen(false), "aria-label": "Tutup form cerita", className: "w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer"}, React.createElement(X, {className: "w-5 h-5"}))), storyFormError && (
+              React.createElement("div", {role: "alert", className: "mt-4 rounded-2xl bg-red-500/20 border-2 border-red-300 px-4 py-3 text-xs sm:text-sm font-bold text-white flex items-center gap-2"}, React.createElement(AlertCircle, {className: "w-5 h-5 text-[#FFE9B0] shrink-0"}), React.createElement("span", null, storyFormError))
+            ), React.createElement("form", {onSubmit: handleSaveStorySubmit, noValidate: true, className: "mt-5 space-y-4"}, React.createElement("div", {className: "grid grid-cols-1 sm:grid-cols-2 gap-4"}, React.createElement(TextInput, {id: "admin-story-title", name: "title", label: "Judul Cerita *", value: storyForm.title, onChange: handleTitleChange, placeholder: "Contoh: Kancil dan Sahabat Hutan"}), React.createElement(TextInput, {id: "admin-story-slug", name: "slug", label: "Slug URL Otomatis *", value: storyForm.slug, onChange: handleSlugChange, placeholder: "kancil-dan-sahabat-hutan"})), React.createElement("div", {className: "grid grid-cols-1 sm:grid-cols-2 gap-4"}, React.createElement("div", null, React.createElement("label", {htmlFor: "admin-story-category", className: "sub-form-label block text-[#FFE9B0] mb-1.5 pl-1"}, "Kategori Tema"), React.createElement("select", {id: "admin-story-category", name: "category", value: storyForm.category, onChange: (e) =>
+                      setStoryForm((prev) => ({ ...prev, category: e.target.value })), className: "w-full min-h-[50px] px-4 py-2.5 rounded-full bg-white text-[#062D2C] font-bold text-sm sm:text-base border-2 border-transparent focus:border-[#E07030] focus:outline-none"}, ADMIN_CATEGORIES.map((cat) => (
+                      React.createElement("option", {key: cat, value: cat}, cat)
+                    )))), React.createElement("div", null, React.createElement("label", {htmlFor: "admin-story-age", className: "sub-form-label block text-[#FFE9B0] mb-1.5 pl-1"}, "Kategori Usia Pembaca"), React.createElement("select", {id: "admin-story-age", name: "age_category", value: storyForm.age_category, onChange: (e) =>
+                      setStoryForm((prev) => ({ ...prev, age_category: e.target.value })), className: "w-full min-h-[50px] px-4 py-2.5 rounded-full bg-white text-[#062D2C] font-bold text-sm sm:text-base border-2 border-transparent focus:border-[#E07030] focus:outline-none"}, ADMIN_AGES.map((age) => (
+                      React.createElement("option", {key: age, value: age}, age)
+                    ))))), React.createElement("div", {className: "bg-[#062D2C]/85 border border-[#1FAFAA]/50 rounded-[24px] p-4 space-y-3"}, React.createElement("div", {className: "grid grid-cols-1 sm:grid-cols-12 gap-4 items-center"}, React.createElement("div", {className: "sm:col-span-3"}, React.createElement("div", {className: "w-24 h-24 mx-auto rounded-2xl overflow-hidden border-2 border-[#FFE9B0] bg-[#007A78]"}, React.createElement(StoryIllustration, {variant: storyForm.cover_url, title: storyForm.title, showCoverTitle: false, sizeVariant: "sm"}))), React.createElement("div", {className: "sm:col-span-9 space-y-2.5"}, React.createElement(TextInput, {id: "admin-story-cover", name: "cover_url", label: "URL Gambar Sampul / Tema Ilustrasi", value: storyForm.cover_url, onChange: (e) =>
+                        setStoryForm((prev) => ({ ...prev, cover_url: e.target.value })), placeholder: "/stories/kucing-hutan/cover.webp atau https://..."}), React.createElement("div", null, React.createElement("span", {className: "text-xs font-bold text-[#FFE9B0] block mb-1 pl-1"}, "Atau pilih cepat gambar sampul bawaan:"), React.createElement("div", {className: "flex flex-wrap gap-1.5"}, PRESET_COVER_OPTIONS.map((opt) => (
+                          React.createElement("button", {key: opt.value, type: "button", onClick: () =>
+                              setStoryForm((prev) => ({ ...prev, cover_url: opt.value })), className: `px-2.5 py-1 rounded-full text-xs font-bold cursor-pointer transition-colors ${
+                              storyForm.cover_url === opt.value
+                                ? 'bg-[#E07030] text-white'
+                                : 'bg-white/10 hover:bg-white/20 text-white/90'
+                            }`}, opt.label)
+                        ))))))), React.createElement("div", {className: "grid grid-cols-1 sm:grid-cols-2 gap-4"}, React.createElement("div", null, React.createElement("label", {htmlFor: "admin-story-synopsis", className: "sub-form-label block text-[#FFE9B0] mb-1.5 pl-1"}, "Sinopsis Cerita"), React.createElement("textarea", {id: "admin-story-synopsis", name: "synopsis", rows: 3, value: storyForm.synopsis, onChange: (e) =>
+                      setStoryForm((prev) => ({ ...prev, synopsis: e.target.value })), placeholder: "Ringkasan singkat isi cerita...", className: "w-full rounded-[22px] bg-white text-[#062D2C] font-bold text-sm p-3.5 border-2 border-transparent focus:border-[#E07030] focus:outline-none"})), React.createElement("div", null, React.createElement("label", {htmlFor: "admin-story-moral", className: "sub-form-label block text-[#FFE9B0] mb-1.5 pl-1"}, "Pesan Moral Cerita"), React.createElement("textarea", {id: "admin-story-moral", name: "moral_value", rows: 3, value: storyForm.moral_value, onChange: (e) =>
+                      setStoryForm((prev) => ({ ...prev, moral_value: e.target.value })), placeholder: "Nilai kebaikan atau pesan moral yang dipetik anak...", className: "w-full rounded-[22px] bg-white text-[#062D2C] font-bold text-sm p-3.5 border-2 border-transparent focus:border-[#E07030] focus:outline-none"}))), React.createElement("div", {className: "bg-[#062D2C]/90 border-2 border-[#1FAFAA]/50 rounded-[26px] p-4 sm:p-5 space-y-4"}, React.createElement("div", {className: "flex flex-wrap items-center justify-between gap-2"}, React.createElement("div", null, React.createElement("h3", {className: "font-heading font-extrabold text-lg text-[#FFE9B0]"}, "Isi Cerita per Halaman (", storyForm.pages.length, " Halaman)"), React.createElement("p", {className: "sub-help text-white/85"}, "Atur gambar ilustrasi dan paragraf cerita untuk setiap halaman buku.")), React.createElement("button", {type: "button", onClick: handleAddFormPage, className: "min-h-[38px] px-4 py-1.5 rounded-full bg-[#1FAFAA] hover:bg-[#159A95] text-[#052625] font-heading font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer"}, React.createElement(Plus, {className: "w-4 h-4"}), React.createElement("span", null, "+ Tambah Halaman"))), React.createElement("div", {className: "space-y-3.5 max-h-[320px] overflow-y-auto pr-1"}, storyForm.pages.map((p, idx) => (
+                    React.createElement("div", {key: `form-page-${idx}`, className: "bg-[#005E5C] border border-[#1FAFAA]/40 rounded-2xl p-3.5 space-y-2.5"}, React.createElement("div", {className: "flex items-center justify-between gap-2"}, React.createElement("span", {className: "px-3 py-0.5 rounded-full bg-[#FFE9B0] text-[#052625] font-heading font-extrabold text-xs"}, "Halaman ", idx + 1), storyForm.pages.length > 1 && (
+                          React.createElement("button", {type: "button", onClick: () => handleRemoveFormPage(idx), className: "px-2.5 py-0.5 rounded-full bg-red-500/20 hover:bg-red-500/40 text-red-200 text-xs font-bold inline-flex items-center gap-1 cursor-pointer"}, React.createElement(Trash2, {className: "w-3 h-3"}), React.createElement("span", null, "Hapus Hal."))
+                        )), React.createElement(TextInput, {id: `admin-page-img-${idx}`, name: `pageImg_${idx}`, label: `URL Gambar Halaman ${idx + 1}`, value: p.gambar, onChange: (e) =>
+                          handlePageFieldChange(idx, 'gambar', e.target.value), placeholder: storyForm.cover_url || '/stories/kucing-hutan/halaman-1.webp'}), React.createElement("div", null, React.createElement("label", {htmlFor: `admin-page-text-${idx}`, className: "sub-help block text-[#FFE9B0] mb-1 pl-1"}, "Paragraf / Teks Cerita Halaman ", idx + 1, " *"), React.createElement("textarea", {id: `admin-page-text-${idx}`, name: `pageText_${idx}`, rows: 2, value: p.teks, onChange: (e) =>
+                            handlePageFieldChange(idx, 'teks', e.target.value), placeholder: `Tulis isi cerita untuk halaman ${idx + 1}...`, className: "font-story w-full rounded-2xl bg-[#FFE9B0] text-[#042423] font-bold text-sm sm:text-base p-3 border-2 border-transparent focus:border-[#E07030] focus:outline-none"})))
+                  )))), React.createElement("div", {className: "pt-2 flex flex-wrap items-center justify-end gap-3"}, React.createElement("button", {type: "button", onClick: () => setStoryModalOpen(false), className: "min-h-[46px] px-5 py-2 rounded-full bg-white/15 hover:bg-white/25 text-white font-heading font-bold text-sm cursor-pointer"}, "Batal"), React.createElement("button", {type: "submit", disabled: savingStory, className: "min-h-[48px] px-7 py-2.5 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white border-2 border-[#FFE9B0] font-heading font-extrabold text-sm sm:text-base inline-flex items-center gap-2 shadow-lg cursor-pointer"}, React.createElement(Save, {className: "w-4 h-4"}), React.createElement("span", null, savingStory
+                      ? 'Menyimpan...'
+                      : isEditingStory
+                      ? 'Simpan Perubahan Cerita'
+                      : 'Terbitkan ke Koleksi'))))))
+      ), confirmDeleteStory && (
+        React.createElement("div", {role: "dialog", "aria-modal": "true", className: "fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C] border-4 border-[#FFE9B0] rounded-[30px] p-6 text-center shadow-2xl"}, React.createElement(Trash2, {className: "w-12 h-12 text-[#E07030] mx-auto mb-2"}), React.createElement("h3", {className: "font-heading font-extrabold text-2xl text-[#FFE9B0]"}, "Hapus Cerita Ini?"), React.createElement("p", {className: "sub-section text-white/90 mt-2"}, "Apakah Anda yakin ingin menghapus cerita", ' ', React.createElement("strong", {className: "text-[#FFE9B0]"}, "&ldquo;", confirmDeleteStory.judul || confirmDeleteStory.title, "&rdquo;"), ' ', "dari katalog koleksi?"), React.createElement("div", {className: "mt-6 flex items-center justify-center gap-3"}, React.createElement("button", {type: "button", onClick: () => setConfirmDeleteStory(null), className: "min-h-[44px] px-5 py-2 rounded-full bg-white/15 text-white font-bold text-sm cursor-pointer"}, "Batal"), React.createElement("button", {type: "button", disabled: Boolean(deletingStoryId), onClick: handleConfirmDeleteStory, className: "min-h-[44px] px-6 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-sm cursor-pointer"}, deletingStoryId ? 'Menghapus...' : 'Ya, Hapus Cerita'))))
+      ), confirmDeleteComment && (
+        React.createElement("div", {role: "dialog", "aria-modal": "true", className: "fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"}, React.createElement("div", {className: "w-full max-w-md bg-[#005E5C] border-4 border-[#FFE9B0] rounded-[30px] p-6 text-center shadow-2xl"}, React.createElement(ShieldCheck, {className: "w-12 h-12 text-[#FFE9B0] mx-auto mb-2"}), React.createElement("h3", {className: "font-heading font-extrabold text-2xl text-[#FFE9B0]"}, "Hapus Komentar Ini?"), React.createElement("p", {className: "sub-section text-white/90 mt-2"}, "Komentar dari ", React.createElement("strong", {className: "text-[#FFE9B0]"}, confirmDeleteComment.author_name), " akan dihapus permanen karena melanggar kebijakan kesantunan BUKUNA."), React.createElement("div", {className: "mt-6 flex items-center justify-center gap-3"}, React.createElement("button", {type: "button", onClick: () => setConfirmDeleteComment(null), className: "min-h-[44px] px-5 py-2 rounded-full bg-white/15 text-white font-bold text-sm cursor-pointer"}, "Batal"), React.createElement("button", {type: "button", disabled: Boolean(deletingCommentId), onClick: handleConfirmDeleteComment, className: "min-h-[44px] px-6 py-2 rounded-full bg-[#E07030] hover:bg-[#C95B1E] text-white font-heading font-extrabold text-sm cursor-pointer"}, deletingCommentId ? 'Menghapus...' : 'Ya, Hapus Komentar'))))
+      ))
+  );
+}
+
+
 // === MODULE: src/App.jsx ===
+
 
 
 
@@ -10636,7 +11924,7 @@ function DemoModeBanner() {
 
 function App() {
   return (
-    React.createElement(BukunaProvider, null, React.createElement(DemoModeBanner, null), React.createElement(ToastNotification, null), React.createElement(Routes, null, React.createElement(Route, {path: "/", element: React.createElement(SplashPage, null)}), React.createElement(Route, {path: "/auth", element: React.createElement(AuthChoicePage, null)}), React.createElement(Route, {path: "/masuk", element: React.createElement(LoginPage, null)}), React.createElement(Route, {path: "/daftar", element: React.createElement(RegisterPage, null)}), React.createElement(Route, {path: "/beranda", element: React.createElement(HomePage, null)}), React.createElement(Route, {path: "/koleksi", element: React.createElement(CollectionPage, null)}), React.createElement(Route, {path: "/favorit", element: React.createElement(FavoritesPage, null)}), React.createElement(Route, {path: "/akun", element: React.createElement(ProfilePage, null)}), React.createElement(Route, {path: "/cerita-saya", element: React.createElement(MyStories, null)}), React.createElement(Route, {path: "/cerita/buat", element: React.createElement(CreateStory, null)}), React.createElement(Route, {path: "/cerita/:id/edit", element: React.createElement(EditStory, null)}), React.createElement(Route, {path: "/kuis", element: React.createElement(QuizHubPage, null)}), React.createElement(Route, {path: "/kuis/:storyId", element: React.createElement(QuizPlayPage, null)}), React.createElement(Route, {path: "/cerita/:id", element: React.createElement(StoryDetailPage, null)}), React.createElement(Route, {path: "/baca/:id", element: React.createElement(ReadStoryPage, null)}), React.createElement(Route, {path: "/selesai/:id", element: React.createElement(FinishStoryPage, null)}), React.createElement(Route, {path: "/tentang", element: React.createElement(AboutPage, null)}), React.createElement(Route, {path: "/pencarian", element: React.createElement(SearchPage, null)}), React.createElement(Route, {path: "*", element: React.createElement(Navigate, {to: "/beranda", replace: true})})))
+    React.createElement(BukunaProvider, null, React.createElement(DemoModeBanner, null), React.createElement(ToastNotification, null), React.createElement(Routes, null, React.createElement(Route, {path: "/", element: React.createElement(SplashPage, null)}), React.createElement(Route, {path: "/auth", element: React.createElement(AuthChoicePage, null)}), React.createElement(Route, {path: "/masuk", element: React.createElement(LoginPage, null)}), React.createElement(Route, {path: "/daftar", element: React.createElement(RegisterPage, null)}), React.createElement(Route, {path: "/beranda", element: React.createElement(HomePage, null)}), React.createElement(Route, {path: "/koleksi", element: React.createElement(CollectionPage, null)}), React.createElement(Route, {path: "/favorit", element: React.createElement(FavoritesPage, null)}), React.createElement(Route, {path: "/akun", element: React.createElement(ProfilePage, null)}), React.createElement(Route, {path: "/cerita-saya", element: React.createElement(MyStories, null)}), React.createElement(Route, {path: "/cerita/buat", element: React.createElement(CreateStory, null)}), React.createElement(Route, {path: "/cerita/:id/edit", element: React.createElement(EditStory, null)}), React.createElement(Route, {path: "/kuis", element: React.createElement(QuizHubPage, null)}), React.createElement(Route, {path: "/kuis/:storyId", element: React.createElement(QuizPlayPage, null)}), React.createElement(Route, {path: "/cerita/:id", element: React.createElement(StoryDetailPage, null)}), React.createElement(Route, {path: "/baca/:id", element: React.createElement(ReadStoryPage, null)}), React.createElement(Route, {path: "/selesai/:id", element: React.createElement(FinishStoryPage, null)}), React.createElement(Route, {path: "/tentang", element: React.createElement(AboutPage, null)}), React.createElement(Route, {path: "/pencarian", element: React.createElement(SearchPage, null)}), React.createElement(Route, {path: "/admin", element: React.createElement(AdminDashboardPage, null)}), React.createElement(Route, {path: "*", element: React.createElement(Navigate, {to: "/beranda", replace: true})})))
   );
 }
 

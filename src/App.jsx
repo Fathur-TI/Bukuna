@@ -20,6 +20,7 @@ import CreateStory from './pages/CreateStory';
 import EditStory from './pages/EditStory';
 import QuizHubPage from './pages/QuizHubPage';
 import QuizPlayPage from './pages/QuizPlayPage';
+import AdminDashboardPage from './pages/AdminDashboardPage';
 
 function ToastNotification() {
   const { toastMessage } = useBukuna();
@@ -110,6 +111,9 @@ export default function App() {
 
         {/* 13. Pencarian Cerita */}
         <Route path="/pencarian" element={<SearchPage />} />
+
+        {/* 14. Dashboard Admin Terintegrasi (Protected Route role === 'ADMIN') */}
+        <Route path="/admin" element={<AdminDashboardPage />} />
 
         {/* Fallback ke Beranda */}
         <Route path="*" element={<Navigate to="/beranda" replace />} />

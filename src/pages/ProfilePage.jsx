@@ -14,6 +14,7 @@ import {
   Edit3,
   Star,
   Sparkles,
+  ShieldCheck,
 } from 'lucide-react';
 import Header from '../components/Header';
 import Navigation from '../components/Navigation';
@@ -51,6 +52,7 @@ export default function ProfilePage() {
   const navigate = useNavigate();
   const {
     user,
+    isAdmin,
     stories,
     myStories,
     favorites,
@@ -106,10 +108,21 @@ export default function ProfilePage() {
               {user ? user.email : 'Belum masuk akun'}
             </p>
 
-            {user && user.peran && (
+            {user && (user.role || user.peran) && (
               <span className="mt-2 px-3 py-0.5 rounded-full bg-[#062D2C] border border-[#1FAFAA] text-xs font-extrabold uppercase tracking-wider text-[#FFE9B0]">
-                Peran: {user.peran}
+                Peran: {isAdmin ? 'ADMIN' : user.role || user.peran}
               </span>
+            )}
+
+            {/* Tombol Cepat Dashboard Admin (Khusus ADMIN) */}
+            {isAdmin && (
+              <Link
+                to="/admin"
+                className="mt-4 w-full min-h-[48px] px-5 py-2.5 rounded-full bg-[#062D2C] hover:bg-[#1FAFAA] text-[#FFE9B0] hover:text-[#052625] border-2 border-[#FFE9B0] font-heading font-extrabold text-sm sm:text-base shadow-lg flex items-center justify-center gap-2 transition-all"
+              >
+                <ShieldCheck className="w-5 h-5" />
+                <span>Buka Dashboard Admin</span>
+              </Link>
             )}
 
             {/* Tombol Cepat "+ Buat Cerita" */}
